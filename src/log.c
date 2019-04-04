@@ -9,15 +9,23 @@
 #include "log.h"
 #include <stdbool.h>
 
+//#include "timer.h"
+
 #if INCLUDE_LOGGING
 /**
  * @return a timestamp value for the logger, typically based on a free running timer.
  * This will be printed at the beginning of each log message.
  */
+
+
 uint32_t loggerGetTimestamp(void)
 {
+	/*uint32_t total_time;
+		//total_time = ((rollover_counter * 1) + (LETIMER_CounterGet(LETIMER0) * (2 / 32678)));
+		total_time = count;
+		LOG_INFO("%d\n", total_time);
+		return total_time;*/
 	//return timerGetRunTimeMilliseconds();
-	return 0;
 }
 
 /**
