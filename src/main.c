@@ -244,11 +244,11 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 			break;
 
 		case gecko_evt_le_connection_opened_id:
-			displayPrintf(DISPLAY_ROW_ACTION, "Connected");
+			displayPrintf(DISPLAY_ROW_CONNECTION, "Connected");
 			break;
 
 		case gecko_evt_le_connection_closed_id:
-			displayPrintf(DISPLAY_ROW_ACTION, "");
+			displayPrintf(DISPLAY_ROW_CONNECTION, "");
 			break;
 
 		case gecko_evt_mesh_node_reset_id:
@@ -345,12 +345,12 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 
 			case gecko_evt_le_connection_opened_id:
 				//connection_handle = evt->data.evt_le_connection_opened.connection;
-				displayPrintf(DISPLAY_ROW_ACTION, "Connected");
+				displayPrintf(DISPLAY_ROW_CONNECTION, "Connected");
 				break;
 
 			case gecko_evt_le_connection_closed_id:
 				//gecko_cmd_system_reset(2);
-				displayPrintf(DISPLAY_ROW_ACTION, "");
+				displayPrintf(DISPLAY_ROW_CONNECTION, "");
 				break;
 
 			case gecko_evt_mesh_node_reset_id:
