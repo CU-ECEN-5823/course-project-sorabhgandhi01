@@ -6,4 +6,4 @@ Command Table - https://drive.google.com/drive/folders/19hdArP41vl--8bYrzDXRaQdi
 
 Group Project Report - https://drive.google.com/drive/folders/19hdArP41vl--8bYrzDXRaQdipgCvqJyU
 
-Project Validation Plan - 
+Project Validation Plan - https://drive.google.com/open?id=1fT7aAccYDtFnekfaoFxfsdTUZt_fWKRsD7TQs9PxbyQ
