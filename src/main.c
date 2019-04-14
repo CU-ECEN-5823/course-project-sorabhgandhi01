@@ -47,6 +47,8 @@
 #include "mesh_generic_model_capi_types.h"
 #include "gatt_db.h"
 #include "mesh_lib.h"
+#include <gecko_configuration.h>
+#include <mesh_sizes.h>
 
 /*********************************************************************************
  * 						Own Headers
@@ -62,6 +64,30 @@
  ********************************************************************************/
 /// Flag for indicating DFU Reset must be performed
 //uint8_t boot_to_dfu = 0;
+
+/// Maximum number of simultaneous Bluetooth connections
+#define MAX_CONNECTIONS 2
+
+/// Heap for Bluetooth stack
+uint8_t bluetooth_stack_heap[DEFAULT_BLUETOOTH_HEAP(MAX_CONNECTIONS) + BTMESH_HEAP_SIZE + 1760];
+
+bool mesh_bgapi_listener(struct gecko_cmd_packet *evt);
+
+/// Bluetooth advertisement set configuration
+///
+/// At minimum the following is required:
+/// * One advertisement set for Bluetooth LE stack (handle number 0)
+/// * One advertisement set for Mesh data (handle number 1)
+/// * One advertisement set for Mesh unprovisioned beacons (handle number 2)
+/// * One advertisement set for Mesh unprovisioned URI (handle number 3)
+/// * N advertisement sets for Mesh GATT service advertisements
+/// (one for each network key, handle numbers 4 .. N+3)
+///
+#define MAX_ADVERTISERS (4 + MESH_CFG_MAX_NETKEYS)
+
+/// Priorities for bluetooth link layer operations
+static gecko_bluetooth_ll_priorities linklayer_priorities = GECKO_BLUETOOTH_PRIORITIES_DEFAULT;
+
 
 /// Timer Frequency used
 #define TIMER_CLK_FREQ ((uint32)32768)
@@ -83,6 +109,33 @@
 #define TIMER_ID_SAVE_STATE               60
 //#define SCHEDULER_SUPPORTS_DISPLAY_UPDATE_EVENT 1
 //#define TIMER_SUPPORTS_1HZ_TIMER_EVENT	1
+
+/// Bluetooth stack configuration
+const gecko_configuration_t config1 =
+{
+#if defined(FEATURE_LFXO)
+  .sleep.flags = SLEEP_FLAGS_DEEP_SLEEP_ENABLE,
+#else
+  .sleep.flags = 0,
+#endif // LFXO
+  .bluetooth.max_connections = MAX_CONNECTIONS,
+  .bluetooth.max_advertisers = MAX_ADVERTISERS,
+  .bluetooth.heap = bluetooth_stack_heap,
+  .bluetooth.heap_size = sizeof(bluetooth_stack_heap) - BTMESH_HEAP_SIZE,
+  .bluetooth.sleep_clock_accuracy = 100,
+  .bluetooth.linklayer_priorities = &linklayer_priorities,
+  .gattdb = &bg_gattdb_data,
+  .btmesh_heap_size = BTMESH_HEAP_SIZE,
+#if (HAL_PA_ENABLE)
+  .pa.config_enable = 1, // Set this to be a valid PA config
+#if defined(FEATURE_PA_INPUT_FROM_VBAT)
+  .pa.input = GECKO_RADIO_PA_INPUT_VBAT, // Configure PA input to VBAT
+#else
+  .pa.input = GECKO_RADIO_PA_INPUT_DCDC,
+#endif // defined(FEATURE_PA_INPUT_FROM_VBAT)
+#endif // (HAL_PA_ENABLE)
+  .max_timers = 16,
+};
 
 /*********************************************************************************
  * 							Helper Functions
@@ -111,10 +164,15 @@ static errorcode_t onoff_update_and_publish(uint16_t element_index);
 static errorcode_t onoff_update(uint16_t element_index);
 void init_models();
 void handle_button_state(uint8_t button);
+void sorabh_node_init(void);
+void lpn_init(void);
 
 /*********************************************************************************
  * 							GLOBAL VARIABLES
  ********************************************************************************/
+
+/// Flag for indicating DFU Reset must be performed
+//uint8_t boot_to_dfu = 0;
 
 /// current position of the switch
 static uint8 switch_pos = 0;
@@ -128,9 +186,19 @@ static uint8 trid = 0;
 /// For indexing elements of the node (this example has only one element)
 static uint16 _elem_index = 0xffff;
 
-static uint16 _primary_elem_index = 0xffff; /* For indexing elements of the node */
+/// For indexing elements of the node
+static uint16 _primary_elem_index = 0xffff;
 
 static uint8_t connection_handle;
+
+/// Flag for indicating that lpn feature is active
+static uint8 lpn_active = 0;
+
+/// number of active Bluetooth connections
+static uint8 num_connections = 0;
+
+/// handle of the last opened LE connection
+static uint8 conn_handle = 0xFF;
 
 extern uint8_t EXT_SIGNAL_PB0_BUTTON;
 
@@ -152,6 +220,32 @@ int main(void)
   //Initialize the display
    displayInit();
 
+   gecko_bgapi_classes_init_client_lpn();
+//   	 gecko_stack_init(&config1);
+//     gecko_bgapi_class_dfu_init();
+//     gecko_bgapi_class_system_init();
+//     gecko_bgapi_class_le_gap_init();
+//     gecko_bgapi_class_le_connection_init();
+//     //gecko_bgapi_class_gatt_init();
+//     gecko_bgapi_class_gatt_server_init();
+//     gecko_bgapi_class_hardware_init();
+//     gecko_bgapi_class_flash_init();
+//     gecko_bgapi_class_test_init();
+//     //gecko_bgapi_class_sm_init();
+//     //mesh_native_bgapi_init();
+//     gecko_bgapi_class_mesh_node_init();
+//     //gecko_bgapi_class_mesh_prov_init();
+//     gecko_bgapi_class_mesh_proxy_init();
+//     gecko_bgapi_class_mesh_proxy_server_init();
+//     //gecko_bgapi_class_mesh_proxy_client_init();
+//     gecko_bgapi_class_mesh_generic_client_init();
+//     //gecko_bgapi_class_mesh_generic_server_init();
+//     //gecko_bgapi_class_mesh_vendor_model_init();
+//     //gecko_bgapi_class_mesh_health_client_init();
+//     //gecko_bgapi_class_mesh_health_server_init();
+//     //gecko_bgapi_class_mesh_test_init();
+//     gecko_bgapi_class_mesh_lpn_init();
+//     //gecko_bgapi_class_mesh_friend_init();
 
   //Initialize timer
    //timer_Init();
@@ -169,6 +263,7 @@ int main(void)
 
 void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 {
+	uint16 result;
 
 	//handle_gecko_event(BGLIB_MSG_ID(evt->header), evt);
 	if (evt == NULL) {
@@ -207,6 +302,27 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 				 case LOGGER_UPDATE:
 					count++;
 					break;
+
+				 case TIMER_ID_NODE_CONFIGURED:
+					 if (!lpn_active) {
+						 LOG_INFO("try to initialize lpn...\r\n");
+						 lpn_init();
+					 }
+					 break;
+
+				 case TIMER_ID_FRIEND_FIND:
+				 	 {
+				 		LOG_INFO("trying to find friend...\r\n");
+				 		result = gecko_cmd_mesh_lpn_establish_friendship(0)->result;
+
+				 		if (result != 0) {
+				 			LOG_INFO("ret.code %x\r\n", result);
+				 		}
+				 	 }
+			        break;
+
+				 default:
+					 break;
 			}
 
 			break;
@@ -214,18 +330,23 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 		case gecko_evt_mesh_node_initialized_id:
 			LOG_INFO("In gecko_evt_mesh_node_initialized_id event\n");
 			//displayPrintf(DISPLAY_ROW_ACTION, "Node");
+
+			// Initialize generic client models
+			gecko_cmd_mesh_generic_client_init();
+
 			struct gecko_msg_mesh_node_initialized_evt_t *pData = (struct gecko_msg_mesh_node_initialized_evt_t *)&(evt->data);
 
 			if ((pData->provisioned)) {
-				// Initialize generic client models
-				gecko_cmd_mesh_generic_client_init();
-				mesh_lib_init(malloc, free, 8);
+				LOG_INFO("node is provisioned. address:%x, ivi:%ld\r\n", pData->address, pData->ivi);
+
 				enable_button_interrupts();
+				sorabh_node_init();
+
+				lpn_init();
 			}
 			else {
 				gecko_cmd_mesh_node_start_unprov_beaconing(0x3);
 			}
-
 			break;
 
 		case gecko_evt_mesh_node_provisioning_started_id:
@@ -233,28 +354,110 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 			break;
 
 		case gecko_evt_mesh_node_provisioned_id:
+			sorabh_node_init();
+
+			// try to initialize lpn after 30 seconds, if no configuration messages come
+			result = gecko_cmd_hardware_set_soft_timer(TIMER_MS_2_TIMERTICK(30000),
+			                                                 TIMER_ID_NODE_CONFIGURED,
+			                                                 1)->result;
+			if (result) {
+				printf("timer failure?!  %x\r\n", result);
+			}
+			LOG_INFO("node provisioned, got address=%x\r\n", evt->data.evt_mesh_node_provisioned.address);
 			displayPrintf(DISPLAY_ROW_ACTION, "Provisioned");
-			gecko_cmd_mesh_generic_client_init();
-			mesh_lib_init(malloc, free, 8);
-			enable_button_interrupts();
 			break;
 
 		case gecko_evt_mesh_node_provisioning_failed_id:
+			LOG_INFO("provisioning failed, code %x\r\n", evt->data.evt_mesh_node_provisioning_failed.result);
 			displayPrintf(DISPLAY_ROW_ACTION, "Provisioned Failed");
+			gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_RESTART, 1);
+			break;
+
+		case gecko_evt_mesh_node_model_config_changed_id:
+			LOG_INFO("model config changed\r\n");
+
+			// try to init lpn 5 seconds after configuration change
+			result = gecko_cmd_hardware_set_soft_timer(TIMER_MS_2_TIMERTICK(5000),
+		                                                 TIMER_ID_NODE_CONFIGURED,
+		                                                 1)->result;
+			if (result) {
+				LOG_INFO("timer failure?!  %x\r\n", result);
+			}
 			break;
 
 		case gecko_evt_le_connection_opened_id:
+			LOG_INFO("evt:gecko_evt_le_connection_opened_id\r\n");
+			num_connections++;
+			conn_handle = evt->data.evt_le_connection_opened.connection;
 			displayPrintf(DISPLAY_ROW_CONNECTION, "Connected");
+			lpn_deinit();
 			break;
 
 		case gecko_evt_le_connection_closed_id:
-			displayPrintf(DISPLAY_ROW_CONNECTION, "");
+
+			 /* Check if need to boot to dfu mode */
+//			if (boot_to_dfu) {
+//				/* Enter to DFU OTA mode */
+//				gecko_cmd_system_reset(2);
+//			}
+
+			LOG_INFO("evt:conn closed, reason 0x%x\r\n", evt->data.evt_le_connection_closed.reason);
+			conn_handle = 0xFF;
+			if (num_connections > 0) {
+				if (--num_connections == 0) {
+					displayPrintf(DISPLAY_ROW_CONNECTION, "");
+					// initialize lpn when there is no active connection
+					lpn_init();
+				}
+			}
+
 			break;
 
 		case gecko_evt_mesh_node_reset_id:
 			gecko_cmd_flash_ps_erase_all();
 			gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_FACTORY_RESET, 1);
 
+			break;
+
+		case gecko_evt_le_connection_parameters_id:
+			LOG_INFO("connection params: interval %d, timeout %d\r\n",
+			             evt->data.evt_le_connection_parameters.interval,
+			             evt->data.evt_le_connection_parameters.timeout);
+			break;
+
+		case gecko_evt_le_gap_adv_timeout_id:
+		      // these events silently discarded
+			break;
+
+		case gecko_evt_mesh_lpn_friendship_established_id:
+			LOG_INFO("friendship established\r\n");
+			displayPrintf(DISPLAY_ROW_CONNECTION, "LPN with friend");
+		    break;
+
+		case gecko_evt_mesh_lpn_friendship_failed_id:
+			LOG_INFO("friendship failed\r\n");
+			displayPrintf(DISPLAY_ROW_CONNECTION, "no friend");
+			// try again in 2 seconds
+			result = gecko_cmd_hardware_set_soft_timer(TIMER_MS_2_TIMERTICK(2000),
+		                                                 TIMER_ID_FRIEND_FIND,
+		                                                 1)->result;
+			if (result) {
+				LOG_INFO("timer failure?!  %x\r\n", result);
+			}
+			break;
+
+		case gecko_evt_mesh_lpn_friendship_terminated_id:
+			LOG_INFO("friendship terminated\r\n");
+			displayPrintf(DISPLAY_ROW_CONNECTION, "friend lost");
+			if (num_connections == 0) {
+				// try again in 2 seconds
+				result = gecko_cmd_hardware_set_soft_timer(TIMER_MS_2_TIMERTICK(2000),
+		                                                   TIMER_ID_FRIEND_FIND,
+		                                                   1)->result;
+				if (result) {
+					LOG_INFO("timer failure?!  %x\r\n", result);
+				}
+			}
 			break;
 
 		case gecko_evt_system_external_signal_id:
@@ -511,4 +714,83 @@ void handle_button_state(uint8_t button)
 	}
 
 	send_onoff_request(0);
+}
+
+void sorabh_node_init()
+{
+	mesh_lib_init(malloc, free, 8);
+}
+
+/***************************************************************************//**
+ * Initialize LPN functionality with configuration and friendship establishment.
+ ******************************************************************************/
+void lpn_init(void)
+{
+	uint16 result;
+
+	// Do not initialize LPN if lpn is currently active
+	// or any GATT connection is opened
+	if (lpn_active || num_connections) {
+		return;
+	}
+
+	// Initialize LPN functionality.
+	result = gecko_cmd_mesh_lpn_init()->result;
+	if (result) {
+		LOG_INFO("LPN init failed (0x%x)\r\n", result);
+		return;
+	}
+
+	lpn_active = 1;
+	LOG_INFO("LPN initialized\r\n");
+	displayPrintf(DISPLAY_ROW_BTADDR2, "LPN on");
+
+	// Configure the lpn with following parameters:
+	// - Minimum friend queue length = 2
+	// - Poll timeout = 5 seconds
+	result = gecko_cmd_mesh_lpn_configure(2, 5 * 1000)->result;
+	if (result) {
+		LOG_INFO("LPN conf failed (0x%x)\r\n", result);
+		return;
+	}
+
+	LOG_INFO("trying to find friend...\r\n");
+	result = gecko_cmd_mesh_lpn_establish_friendship(0)->result;
+
+	if (result != 0) {
+		LOG_INFO("ret.code %x\r\n", result);
+	}
+}
+
+
+/***************************************************************************//**
+ * Deinitialize LPN functionality.
+ ******************************************************************************/
+void lpn_deinit(void)
+{
+	uint16 result;
+
+	if (!lpn_active) {
+		return; // lpn feature is currently inactive
+		}
+
+	result = gecko_cmd_hardware_set_soft_timer(0, // cancel friend finding timer
+                                             TIMER_ID_FRIEND_FIND,
+                                             1)->result;
+
+	// Terminate friendship if exist
+	result = gecko_cmd_mesh_lpn_terminate_friendship()->result;
+	if (result) {
+		LOG_INFO("Friendship termination failed (0x%x)\r\n", result);
+	}
+
+	// turn off lpn feature
+	result = gecko_cmd_mesh_lpn_deinit()->result;
+	if (result) {
+		LOG_INFO("LPN deinit failed (0x%x)\r\n", result);
+	}
+
+	lpn_active = 0;
+	LOG_INFO("LPN deinitialized\r\n");
+	displayPrintf(DISPLAY_ROW_BTADDR2, "LPN off");
 }
