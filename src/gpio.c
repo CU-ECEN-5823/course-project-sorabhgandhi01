@@ -25,6 +25,9 @@ void gpioInit()
 
 	GPIO_PinModeSet(PB0_BUTTON_PORT, PB0_BUTTON_PIN, gpioModeInputPull, true);
 	GPIO_PinModeSet(PB1_BUTTON_PORT, PB1_BUTTON_PIN, gpioModeInputPull, true);
+
+	GPIO_PinModeSet(PIR_SENSOR_PORT, PIR_SENSOR_1, gpioModeInputPull, true);
+	GPIO_PinModeSet(PIR_SENSOR_PORT, PIR_SENSOR_2, gpioModeInputPull, true);
 }
 
 void gpioLed0SetOn()
@@ -62,15 +65,13 @@ void gpioint(uint8_t pin)
 {
 	if (pin == PB0_BUTTON_PIN)
 	{
-//		if ((GPIO_PinInGet(PB0_BUTTON_PORT, PB0_BUTTON_PIN)) == 0) {
-//			gecko_external_signal(EXT_SIGNAL_PB0_BUTTON_PRESSED);
-//		}
-//		else if ((GPIO_PinInGet(PB0_BUTTON_PORT, PB0_BUTTON_PIN)) == 1) {
-//			gecko_external_signal(EXT_SIGNAL_PB0_BUTTON_RELEASED);
-//		}
-
-		EXT_SIGNAL_PB0_BUTTON |= BUTTON_STATUS;
+		EXT_SIGNAL_PB0_BUTTON |= PB0_BUTTON_STATUS;
 		gecko_external_signal(EXT_SIGNAL_PB0_BUTTON);
+	}
+	else if (pin == PB1_BUTTON_PIN)
+	{
+		EXT_SIGNAL_PB1_BUTTON |= PB1_BUTTON_STATUS;
+		gecko_external_signal(EXT_SIGNAL_PB1_BUTTON);
 	}
 }
 
@@ -81,8 +82,10 @@ void enable_button_interrupts(void)
 
   /* configure interrupt for PB0 and PB1, both falling and rising edges */
   GPIO_ExtIntConfig(PB0_BUTTON_PORT, PB0_BUTTON_PIN, PB0_BUTTON_PIN, true, true, true);
+  GPIO_ExtIntConfig(PB1_BUTTON_PORT, PB1_BUTTON_PIN, PB1_BUTTON_PIN, true, true, true);
 
   /* register the callback function that is invoked when interrupt occurs */
   GPIOINT_CallbackRegister(PB0_BUTTON_PIN, gpioint);
+  GPIOINT_CallbackRegister(PB1_BUTTON_PIN, gpioint);
 }
 

@@ -43,11 +43,13 @@
 /*********************************************************************************
  * 						SDK Headers
  ********************************************************************************/
+#include "bg_types.h"
 #include "native_gecko.h"
-#include "mesh_generic_model_capi_types.h"
 #include "gatt_db.h"
-#include "mesh_lib.h"
 #include <gecko_configuration.h>
+#include "mesh_generic_model_capi_types.h"
+#include "mesh_lighting_model_capi_types.h"
+#include "mesh_lib.h"
 #include <mesh_sizes.h>
 
 /*********************************************************************************
@@ -106,7 +108,15 @@ static gecko_bluetooth_ll_priorities linklayer_priorities = GECKO_BLUETOOTH_PRIO
 #define TIMER_ID_RETRANS          10
 #define TIMER_ID_FRIEND_FIND      20
 #define TIMER_ID_NODE_CONFIGURED  30
-#define TIMER_ID_SAVE_STATE               60
+#define TIMER_ID_SAVE_STATE		60
+
+/// Minimum color temperature 800K
+#define TEMPERATURE_MIN      0x0320
+/// Maximum color temperature 20000K
+#define TEMPERATURE_MAX      0x4e20
+/// Delta UV is hardcoded to 0 in this example
+#define DELTA_UV  0
+
 //#define SCHEDULER_SUPPORTS_DISPLAY_UPDATE_EVENT 1
 //#define TIMER_SUPPORTS_1HZ_TIMER_EVENT	1
 
@@ -166,6 +176,9 @@ void init_models();
 void handle_button_state(uint8_t button);
 void sorabh_node_init(void);
 void lpn_init(void);
+void send_ctl_request(int retrans);
+void send_lightness_request(int retrans);
+void handle_button_press(int button);
 
 /*********************************************************************************
  * 							GLOBAL VARIABLES
@@ -200,6 +213,14 @@ static uint8 num_connections = 0;
 /// handle of the last opened LE connection
 static uint8 conn_handle = 0xFF;
 
+/// lightness level converted from percentage to actual value, range 0..65535
+static uint16 lightness_level = 0;
+
+/// temperature level converted from percentage to actual value, range 0..65535
+static uint16 temperature_level = 0;
+
+
+
 extern uint8_t EXT_SIGNAL_PB0_BUTTON;
 
 /**********************************************************************************
@@ -218,40 +239,18 @@ int main(void)
   gpioInit();
 
   //Initialize the display
-   displayInit();
+  displayInit();
 
    gecko_bgapi_classes_init_client_lpn();
-//   	 gecko_stack_init(&config1);
-//     gecko_bgapi_class_dfu_init();
-//     gecko_bgapi_class_system_init();
-//     gecko_bgapi_class_le_gap_init();
-//     gecko_bgapi_class_le_connection_init();
-//     //gecko_bgapi_class_gatt_init();
-//     gecko_bgapi_class_gatt_server_init();
-//     gecko_bgapi_class_hardware_init();
-//     gecko_bgapi_class_flash_init();
-//     gecko_bgapi_class_test_init();
-//     //gecko_bgapi_class_sm_init();
-//     //mesh_native_bgapi_init();
-//     gecko_bgapi_class_mesh_node_init();
-//     //gecko_bgapi_class_mesh_prov_init();
-//     gecko_bgapi_class_mesh_proxy_init();
-//     gecko_bgapi_class_mesh_proxy_server_init();
-//     //gecko_bgapi_class_mesh_proxy_client_init();
-//     gecko_bgapi_class_mesh_generic_client_init();
-//     //gecko_bgapi_class_mesh_generic_server_init();
-//     //gecko_bgapi_class_mesh_vendor_model_init();
-//     //gecko_bgapi_class_mesh_health_client_init();
-//     //gecko_bgapi_class_mesh_health_server_init();
-//     //gecko_bgapi_class_mesh_test_init();
-//     gecko_bgapi_class_mesh_lpn_init();
-//     //gecko_bgapi_class_mesh_friend_init();
 
   //Initialize timer
    //timer_Init();
 
   /* Infinite loop */
   while (1) {
+
+//	  uint8_t status = GPIO_PinInGet(PIR_SENSOR_PORT, PIR_SENSOR_1);
+//	  LOG_INFO("Status = %d\r\n", status);
 
 	struct gecko_cmd_packet *evt = gecko_wait_event();
 	bool pass = mesh_bgapi_listener(evt);
@@ -462,13 +461,25 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 
 		case gecko_evt_system_external_signal_id:
 
-			if ((evt->data.evt_system_external_signal.extsignals) & BUTTON_STATUS) {
-				EXT_SIGNAL_PB0_BUTTON &= ~(BUTTON_STATUS);
-				if(GPIO_PinInGet(gpioPortF, 6) == 0) {
+			if ((evt->data.evt_system_external_signal.extsignals) & PB0_BUTTON_STATUS) {
+				EXT_SIGNAL_PB0_BUTTON &= ~(PB0_BUTTON_STATUS);
+
+				if(GPIO_PinInGet(gpioPortF, PB0_BUTTON_PIN) == 0) {
 					handle_button_state(0);
 				}
-				if(GPIO_PinInGet(gpioPortF, 6) == 1) {
+				if(GPIO_PinInGet(gpioPortF, PB0_BUTTON_PIN) == 1) {
 					handle_button_state(1);
+				}
+			}
+
+			if ((evt->data.evt_system_external_signal.extsignals) & PB1_BUTTON_STATUS) {
+				EXT_SIGNAL_PB1_BUTTON &= ~(PB1_BUTTON_STATUS);
+
+				if(GPIO_PinInGet(gpioPortF, PB1_BUTTON_PIN) == 0) {
+					handle_button_press(0);
+				}
+				if(GPIO_PinInGet(gpioPortF, PB1_BUTTON_PIN) == 1) {
+					handle_button_press(1);
 				}
 			}
 
@@ -793,4 +804,119 @@ void lpn_deinit(void)
 	lpn_active = 0;
 	LOG_INFO("LPN deinitialized\r\n");
 	displayPrintf(DISPLAY_ROW_BTADDR2, "LPN off");
+}
+
+
+/***************************************************************************//**
+ * This function publishes one light lightness request to change the lightness
+ * level of light(s) in the group. Global variable lightness_level holds
+ * the latest desired light level.
+ *
+ * param[in] retrans  Indicates if this is the first request or a retransmission,
+ *                    possible values are 0 = first request, 1 = retransmission.
+ ******************************************************************************/
+void send_lightness_request(int retrans)
+{
+  uint16 resp;
+  uint16 delay;
+  struct mesh_generic_request req;
+
+  req.kind = mesh_lighting_request_lightness_actual;
+  req.lightness = lightness_level;
+
+  // increment transaction ID for each request, unless it's a retransmission
+  if (retrans == 0) {
+    trid++;
+  }
+
+  delay = 0;
+
+  resp = mesh_lib_generic_client_publish(
+    MESH_LIGHTING_LIGHTNESS_CLIENT_MODEL_ID,
+    _elem_index,
+    trid,
+    &req,
+    0,     // transition
+    delay,
+    0     // flags
+    );
+
+  if (resp) {
+	  LOG_INFO("gecko_cmd_mesh_generic_client_publish failed,code %x\r\n", resp);
+  } else {
+	  //LOG_INFO("Published value = %d\r\n", req.lightness)
+	  LOG_INFO("request sent, trid = %u, delay = %d\r\n", trid, delay);
+  }
+}
+
+/***************************************************************************//**
+ * This function publishes one light CTL request to change the temperature level
+ * of light(s) in the group. Global variable temperature_level holds the latest
+ * desired light temperature level.
+ * The CTL request also send lightness_level which holds the latest desired light
+ * lightness level and Delta UV which is hardcoded to 0 for this application.
+ *
+ * param[in] retrans  Indicates if this is the first request or a retransmission,
+ *                    possible values are 0 = first request, 1 = retransmission.
+ ******************************************************************************/
+void send_ctl_request(int retrans)
+{
+  uint16 resp;
+  uint16 delay;
+  struct mesh_generic_request req;
+
+  req.kind = mesh_lighting_request_ctl;
+  req.ctl.lightness = lightness_level;
+  req.ctl.temperature = temperature_level;
+  req.ctl.deltauv = DELTA_UV; //hardcoded delta uv
+
+  // increment transaction ID for each request, unless it's a retransmission
+  if (retrans == 0) {
+    trid++;
+  }
+
+  delay = 0;
+
+  resp = mesh_lib_generic_client_publish(
+    MESH_LIGHTING_CTL_CLIENT_MODEL_ID,
+    _elem_index,
+    trid,
+    &req,
+    0,     // transition
+    delay,
+    0     // flags
+    );
+
+  if (resp) {
+	  LOG_INFO("gecko_cmd_mesh_generic_client_publish failed,code %x\r\n", resp);
+  } else {
+	  LOG_INFO("request sent, trid = %u, delay = %d\r\n", trid, delay);
+  }
+}
+
+
+/***************************************************************************//**
+ * Handling of short button presses (less than 0.25s).
+ * This function is called from the main loop when application receives
+ * event gecko_evt_system_external_signal_id.
+ *
+ * @param[in] button  Defines which button was pressed,
+ *                    possible values are 0 = PB0, 1 = PB1.
+ *
+ * @note This function is called from application context (not ISR)
+ *       so it is safe to call BGAPI functions
+ ******************************************************************************/
+void handle_button_press(int button)
+{
+  /* short press adjusts light brightness, using Light Lightness model */
+  if (button == 1) {
+	  lightness_level += 10;
+  } else {
+	  lightness_level -= 1;
+  }
+
+  LOG_INFO("lightness level %d\r\n", lightness_level);
+
+  /* send the request (lightness request is sent only once in this example) */
+  send_lightness_request(0);
 }
