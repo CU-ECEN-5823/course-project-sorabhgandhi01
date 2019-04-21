@@ -43,11 +43,13 @@
 /*********************************************************************************
  * 						SDK Headers
  ********************************************************************************/
+#include "bg_types.h"
 #include "native_gecko.h"
-#include "mesh_generic_model_capi_types.h"
 #include "gatt_db.h"
-#include "mesh_lib.h"
 #include <gecko_configuration.h>
+#include "mesh_generic_model_capi_types.h"
+#include "mesh_lighting_model_capi_types.h"
+#include "mesh_lib.h"
 #include <mesh_sizes.h>
 
 /*********************************************************************************
@@ -106,7 +108,15 @@ static gecko_bluetooth_ll_priorities linklayer_priorities = GECKO_BLUETOOTH_PRIO
 #define TIMER_ID_RETRANS          10
 #define TIMER_ID_FRIEND_FIND      20
 #define TIMER_ID_NODE_CONFIGURED  30
-#define TIMER_ID_SAVE_STATE               60
+#define TIMER_ID_SAVE_STATE		60
+
+/// Minimum color temperature 800K
+#define TEMPERATURE_MIN      0x0320
+/// Maximum color temperature 20000K
+#define TEMPERATURE_MAX      0x4e20
+/// Delta UV is hardcoded to 0 in this example
+#define DELTA_UV  0
+
 //#define SCHEDULER_SUPPORTS_DISPLAY_UPDATE_EVENT 1
 //#define TIMER_SUPPORTS_1HZ_TIMER_EVENT	1
 
@@ -164,8 +174,12 @@ static errorcode_t onoff_update_and_publish(uint16_t element_index);
 static errorcode_t onoff_update(uint16_t element_index);
 void init_models();
 void handle_button_state(uint8_t button);
-void sorabh_node_init(void);
+void lpn_node_init(void);
 void lpn_init(void);
+void send_ctl_request(int retrans);
+void send_lightness_request(int retrans);
+void handle_button_press(int button);
+void publish_sensor_data(void);
 
 /*********************************************************************************
  * 							GLOBAL VARIABLES
@@ -200,6 +214,17 @@ static uint8 num_connections = 0;
 /// handle of the last opened LE connection
 static uint8 conn_handle = 0xFF;
 
+/// lightness level converted from percentage to actual value, range 0..65535
+static uint16 lightness_level = 0;
+
+/// temperature level converted from percentage to actual value, range 0..65535
+static uint16 temperature_level = 0;
+
+//people count calculated through the logic
+static uint16 people_count = 0;
+
+
+
 extern uint8_t EXT_SIGNAL_PB0_BUTTON;
 
 /**********************************************************************************
@@ -218,40 +243,20 @@ int main(void)
   gpioInit();
 
   //Initialize the display
-   displayInit();
+  displayInit();
 
-   gecko_bgapi_classes_init_client_lpn();
-//   	 gecko_stack_init(&config1);
-//     gecko_bgapi_class_dfu_init();
-//     gecko_bgapi_class_system_init();
-//     gecko_bgapi_class_le_gap_init();
-//     gecko_bgapi_class_le_connection_init();
-//     //gecko_bgapi_class_gatt_init();
-//     gecko_bgapi_class_gatt_server_init();
-//     gecko_bgapi_class_hardware_init();
-//     gecko_bgapi_class_flash_init();
-//     gecko_bgapi_class_test_init();
-//     //gecko_bgapi_class_sm_init();
-//     //mesh_native_bgapi_init();
-//     gecko_bgapi_class_mesh_node_init();
-//     //gecko_bgapi_class_mesh_prov_init();
-//     gecko_bgapi_class_mesh_proxy_init();
-//     gecko_bgapi_class_mesh_proxy_server_init();
-//     //gecko_bgapi_class_mesh_proxy_client_init();
-//     gecko_bgapi_class_mesh_generic_client_init();
-//     //gecko_bgapi_class_mesh_generic_server_init();
-//     //gecko_bgapi_class_mesh_vendor_model_init();
-//     //gecko_bgapi_class_mesh_health_client_init();
-//     //gecko_bgapi_class_mesh_health_server_init();
-//     //gecko_bgapi_class_mesh_test_init();
-//     gecko_bgapi_class_mesh_lpn_init();
-//     //gecko_bgapi_class_mesh_friend_init();
+  //gecko_bgapi_classes_init_client_lpn();
+
+  //gecko_bgapi_classes_init_server_friend();
 
   //Initialize timer
    //timer_Init();
 
   /* Infinite loop */
   while (1) {
+
+//	  status = GPIO_PinInGet(PIR_SENSOR_PORT, PIR_SENSOR_1);
+//	  LOG_INFO("Status = %d\r\n", status);
 
 	struct gecko_cmd_packet *evt = gecko_wait_event();
 	bool pass = mesh_bgapi_listener(evt);
@@ -265,7 +270,7 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 {
 	uint16 result;
 
-	//handle_gecko_event(BGLIB_MSG_ID(evt->header), evt);
+	handle_gecko_event(BGLIB_MSG_ID(evt->header), evt);
 	if (evt == NULL) {
 		return;
 	}
@@ -303,16 +308,20 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 					count++;
 					break;
 
+				 case TIMER_ID_RESTART:
+					gecko_cmd_system_reset(0);
+					break;
+
 				 case TIMER_ID_NODE_CONFIGURED:
 					 if (!lpn_active) {
-						 LOG_INFO("try to initialize lpn...\r\n");
+						 LOG_DEBUG("try to initialize lpn...\r\n");
 						 lpn_init();
 					 }
 					 break;
 
 				 case TIMER_ID_FRIEND_FIND:
 				 	 {
-				 		LOG_INFO("trying to find friend...\r\n");
+				 		LOG_DEBUG("trying to find friend...\r\n");
 				 		result = gecko_cmd_mesh_lpn_establish_friendship(0)->result;
 
 				 		if (result != 0) {
@@ -328,21 +337,23 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 			break;
 
 		case gecko_evt_mesh_node_initialized_id:
-			LOG_INFO("In gecko_evt_mesh_node_initialized_id event\n");
+			LOG_DEBUG("In gecko_evt_mesh_node_initialized_id event\n");
 			//displayPrintf(DISPLAY_ROW_ACTION, "Node");
+			uint16_t result;
 
 			// Initialize generic client models
-			gecko_cmd_mesh_generic_client_init();
+			result = gecko_cmd_mesh_generic_server_init()->result;
+			if (result) {
+				LOG_ERROR("Mesh server init failed with code = %x", result);
+			}
 
 			struct gecko_msg_mesh_node_initialized_evt_t *pData = (struct gecko_msg_mesh_node_initialized_evt_t *)&(evt->data);
 
 			if ((pData->provisioned)) {
 				LOG_INFO("node is provisioned. address:%x, ivi:%ld\r\n", pData->address, pData->ivi);
-
+				_elem_index = 0;
 				enable_button_interrupts();
-				sorabh_node_init();
-
-				lpn_init();
+				lpn_node_init();
 			}
 			else {
 				gecko_cmd_mesh_node_start_unprov_beaconing(0x3);
@@ -354,43 +365,44 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 			break;
 
 		case gecko_evt_mesh_node_provisioned_id:
-			sorabh_node_init();
+			_elem_index = 0;
+			lpn_node_init();
 
 			// try to initialize lpn after 30 seconds, if no configuration messages come
-			result = gecko_cmd_hardware_set_soft_timer(TIMER_MS_2_TIMERTICK(30000),
+			/*result = gecko_cmd_hardware_set_soft_timer(TIMER_MS_2_TIMERTICK(30000),
 			                                                 TIMER_ID_NODE_CONFIGURED,
-			                                                 1)->result;
-			if (result) {
-				printf("timer failure?!  %x\r\n", result);
-			}
-			LOG_INFO("node provisioned, got address=%x\r\n", evt->data.evt_mesh_node_provisioned.address);
+			                                                 1)->result;*/
+//			if (result) {
+//				printf("timer failure?!  %x\r\n", result);
+//			}
+//			LOG_INFO("node provisioned, got address=%x\r\n", evt->data.evt_mesh_node_provisioned.address);
 			displayPrintf(DISPLAY_ROW_ACTION, "Provisioned");
 			break;
 
 		case gecko_evt_mesh_node_provisioning_failed_id:
-			LOG_INFO("provisioning failed, code %x\r\n", evt->data.evt_mesh_node_provisioning_failed.result);
+			LOG_ERROR("provisioning failed, code %x\r\n", evt->data.evt_mesh_node_provisioning_failed.result);
 			displayPrintf(DISPLAY_ROW_ACTION, "Provisioned Failed");
 			gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_RESTART, 1);
 			break;
 
-		case gecko_evt_mesh_node_model_config_changed_id:
-			LOG_INFO("model config changed\r\n");
-
-			// try to init lpn 5 seconds after configuration change
-			result = gecko_cmd_hardware_set_soft_timer(TIMER_MS_2_TIMERTICK(5000),
-		                                                 TIMER_ID_NODE_CONFIGURED,
-		                                                 1)->result;
-			if (result) {
-				LOG_INFO("timer failure?!  %x\r\n", result);
-			}
-			break;
+//		case gecko_evt_mesh_node_model_config_changed_id:
+//			LOG_INFO("model config changed\r\n");
+//
+//			// try to init lpn 5 seconds after configuration change
+////			result = gecko_cmd_hardware_set_soft_timer(TIMER_MS_2_TIMERTICK(5000),
+////		                                                 TIMER_ID_NODE_CONFIGURED,
+////		                                                 1)->result;
+////			if (result) {
+////				LOG_INFO("timer failure?!  %x\r\n", result);
+////			}
+//			break;
 
 		case gecko_evt_le_connection_opened_id:
 			LOG_INFO("evt:gecko_evt_le_connection_opened_id\r\n");
 			num_connections++;
 			conn_handle = evt->data.evt_le_connection_opened.connection;
 			displayPrintf(DISPLAY_ROW_CONNECTION, "Connected");
-			lpn_deinit();
+			//lpn_deinit();
 			break;
 
 		case gecko_evt_le_connection_closed_id:
@@ -414,40 +426,43 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 			break;
 
 		case gecko_evt_mesh_node_reset_id:
+			if (conn_handle != 0xFF) {
+			    gecko_cmd_le_connection_close(conn_handle);
+			}
 			gecko_cmd_flash_ps_erase_all();
 			gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_FACTORY_RESET, 1);
 
 			break;
 
-		case gecko_evt_le_connection_parameters_id:
-			LOG_INFO("connection params: interval %d, timeout %d\r\n",
-			             evt->data.evt_le_connection_parameters.interval,
-			             evt->data.evt_le_connection_parameters.timeout);
-			break;
-
-		case gecko_evt_le_gap_adv_timeout_id:
-		      // these events silently discarded
-			break;
+//		case gecko_evt_le_connection_parameters_id:
+//			LOG_INFO("connection params: interval %d, timeout %d\r\n",
+//			             evt->data.evt_le_connection_parameters.interval,
+//			             evt->data.evt_le_connection_parameters.timeout);
+//			break;
+//
+//		case gecko_evt_le_gap_adv_timeout_id:
+//		      // these events silently discarded
+//			break;
 
 		case gecko_evt_mesh_lpn_friendship_established_id:
-			LOG_INFO("friendship established\r\n");
+			LOG_DEBUG("friendship established\r\n");
 			displayPrintf(DISPLAY_ROW_CONNECTION, "LPN with friend");
 		    break;
 
 		case gecko_evt_mesh_lpn_friendship_failed_id:
-			LOG_INFO("friendship failed\r\n");
+			LOG_DEBUG("friendship failed\r\n");
 			displayPrintf(DISPLAY_ROW_CONNECTION, "no friend");
 			// try again in 2 seconds
 			result = gecko_cmd_hardware_set_soft_timer(TIMER_MS_2_TIMERTICK(2000),
 		                                                 TIMER_ID_FRIEND_FIND,
 		                                                 1)->result;
 			if (result) {
-				LOG_INFO("timer failure?!  %x\r\n", result);
+				LOG_ERROR("timer failure?!  %x\r\n", result);
 			}
 			break;
 
 		case gecko_evt_mesh_lpn_friendship_terminated_id:
-			LOG_INFO("friendship terminated\r\n");
+			LOG_DEBUG("friendship terminated\r\n");
 			displayPrintf(DISPLAY_ROW_CONNECTION, "friend lost");
 			if (num_connections == 0) {
 				// try again in 2 seconds
@@ -455,20 +470,53 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 		                                                   TIMER_ID_FRIEND_FIND,
 		                                                   1)->result;
 				if (result) {
-					LOG_INFO("timer failure?!  %x\r\n", result);
+					LOG_ERROR("timer failure?!  %x\r\n", result);
 				}
 			}
 			break;
 
+		case gecko_evt_mesh_generic_server_client_request_id:
+			LOG_DEBUG("Reading the subscribed data\r\n");
+
+			uint8_t req_type;
+			uint16_t data;
+
+			req_type = evt->data.evt_mesh_generic_server_client_request.type;
+			data = ((evt->data.evt_mesh_generic_server_client_request.parameters.data[1]) << 8) |
+					(evt->data.evt_mesh_generic_server_client_request.parameters.data[0]);
+
+			LOG_INFO("Subscribed value = %d; data = %d\r\n", req_type, data);
+
+
+		case gecko_evt_mesh_generic_server_state_changed_id:
+			mesh_lib_generic_server_event_handler(evt);
+			break;
+
+		case gecko_evt_gatt_server_user_write_request_id:
+
+			break;
+
 		case gecko_evt_system_external_signal_id:
 
-			if ((evt->data.evt_system_external_signal.extsignals) & BUTTON_STATUS) {
-				EXT_SIGNAL_PB0_BUTTON &= ~(BUTTON_STATUS);
-				if(GPIO_PinInGet(gpioPortF, 6) == 0) {
-					handle_button_state(0);
+			if ((evt->data.evt_system_external_signal.extsignals) & PB0_BUTTON_STATUS) {
+				EXT_SIGNAL_PB0_BUTTON &= ~(PB0_BUTTON_STATUS);
+
+				if(GPIO_PinInGet(gpioPortF, PB0_BUTTON_PIN) == 0) {
+					//handle_button_state(0);
 				}
-				if(GPIO_PinInGet(gpioPortF, 6) == 1) {
-					handle_button_state(1);
+				if(GPIO_PinInGet(gpioPortF, PB0_BUTTON_PIN) == 1) {
+					//handle_button_state(1);
+				}
+			}
+
+			if ((evt->data.evt_system_external_signal.extsignals) & PB1_BUTTON_STATUS) {
+				EXT_SIGNAL_PB1_BUTTON &= ~(PB1_BUTTON_STATUS);
+
+				if(GPIO_PinInGet(gpioPortF, PB1_BUTTON_PIN) == 0) {
+					handle_button_press(0);
+				}
+				if(GPIO_PinInGet(gpioPortF, PB1_BUTTON_PIN) == 1) {
+					handle_button_press(1);
 				}
 			}
 
@@ -623,7 +671,7 @@ void send_onoff_request(int retrans)
     );
 
   if (resp) {
-	 LOG_INFO("gecko_cmd_mesh_generic_client_publish failed,code %x\r\n", resp);
+	 LOG_ERROR("gecko_cmd_mesh_generic_client_publish failed,code %x\r\n", resp);
   } else {
 	 LOG_INFO("request sent, trid = %u \r\n", trid);
   }
@@ -716,9 +764,10 @@ void handle_button_state(uint8_t button)
 	send_onoff_request(0);
 }
 
-void sorabh_node_init()
+void lpn_node_init()
 {
-	mesh_lib_init(malloc, free, 8);
+	mesh_lib_init(malloc, free, 9);
+	lpn_init();
 }
 
 /***************************************************************************//**
@@ -737,12 +786,12 @@ void lpn_init(void)
 	// Initialize LPN functionality.
 	result = gecko_cmd_mesh_lpn_init()->result;
 	if (result) {
-		LOG_INFO("LPN init failed (0x%x)\r\n", result);
+		LOG_ERROR("LPN init failed (0x%x)\r\n", result);
 		return;
 	}
 
 	lpn_active = 1;
-	LOG_INFO("LPN initialized\r\n");
+	LOG_DEBUG("LPN initialized\r\n");
 	displayPrintf(DISPLAY_ROW_BTADDR2, "LPN on");
 
 	// Configure the lpn with following parameters:
@@ -750,11 +799,11 @@ void lpn_init(void)
 	// - Poll timeout = 5 seconds
 	result = gecko_cmd_mesh_lpn_configure(2, 5 * 1000)->result;
 	if (result) {
-		LOG_INFO("LPN conf failed (0x%x)\r\n", result);
+		LOG_ERROR("LPN conf failed (0x%x)\r\n", result);
 		return;
 	}
 
-	LOG_INFO("trying to find friend...\r\n");
+	LOG_DEBUG("trying to find friend...\r\n");
 	result = gecko_cmd_mesh_lpn_establish_friendship(0)->result;
 
 	if (result != 0) {
@@ -781,16 +830,174 @@ void lpn_deinit(void)
 	// Terminate friendship if exist
 	result = gecko_cmd_mesh_lpn_terminate_friendship()->result;
 	if (result) {
-		LOG_INFO("Friendship termination failed (0x%x)\r\n", result);
+		LOG_ERROR("Friendship termination failed (0x%x)\r\n", result);
 	}
 
 	// turn off lpn feature
 	result = gecko_cmd_mesh_lpn_deinit()->result;
 	if (result) {
-		LOG_INFO("LPN deinit failed (0x%x)\r\n", result);
+		LOG_ERROR("LPN deinit failed (0x%x)\r\n", result);
 	}
 
 	lpn_active = 0;
-	LOG_INFO("LPN deinitialized\r\n");
+	LOG_DEBUG("LPN deinitialized\r\n");
 	displayPrintf(DISPLAY_ROW_BTADDR2, "LPN off");
+}
+
+
+/***************************************************************************//**
+ * This function publishes one light lightness request to change the lightness
+ * level of light(s) in the group. Global variable lightness_level holds
+ * the latest desired light level.
+ *
+ * param[in] retrans  Indicates if this is the first request or a retransmission,
+ *                    possible values are 0 = first request, 1 = retransmission.
+ ******************************************************************************/
+void send_lightness_request(int retrans)
+{
+  uint16 resp;
+  uint16 delay;
+  struct mesh_generic_request req;
+
+  req.kind = mesh_lighting_request_lightness_actual;
+  req.lightness = lightness_level;
+
+  // increment transaction ID for each request, unless it's a retransmission
+  if (retrans == 0) {
+    trid++;
+  }
+
+  delay = 0;
+
+  resp = mesh_lib_generic_client_publish(
+    MESH_LIGHTING_LIGHTNESS_CLIENT_MODEL_ID,
+    _elem_index,
+    trid,
+    &req,
+    0,     // transition
+    delay,
+    0     // flags
+    );
+
+  if (resp) {
+	  LOG_ERROR("gecko_cmd_mesh_generic_client_publish failed,code %x\r\n", resp);
+  } else {
+	  //LOG_INFO("Published value = %d\r\n", req.lightness)
+	  LOG_INFO("request sent, trid = %u, delay = %d\r\n", trid, delay);
+  }
+}
+
+/***************************************************************************//**
+ * This function publishes one light CTL request to change the temperature level
+ * of light(s) in the group. Global variable temperature_level holds the latest
+ * desired light temperature level.
+ * The CTL request also send lightness_level which holds the latest desired light
+ * lightness level and Delta UV which is hardcoded to 0 for this application.
+ *
+ * param[in] retrans  Indicates if this is the first request or a retransmission,
+ *                    possible values are 0 = first request, 1 = retransmission.
+ ******************************************************************************/
+void send_ctl_request(int retrans)
+{
+  uint16 resp;
+  uint16 delay;
+  struct mesh_generic_request req;
+
+  req.kind = mesh_lighting_request_ctl;
+  req.ctl.lightness = lightness_level;
+  req.ctl.temperature = temperature_level;
+  req.ctl.deltauv = DELTA_UV; //hardcoded delta uv
+
+  // increment transaction ID for each request, unless it's a retransmission
+  if (retrans == 0) {
+    trid++;
+  }
+
+  delay = 0;
+
+  resp = mesh_lib_generic_client_publish(
+    MESH_LIGHTING_CTL_CLIENT_MODEL_ID,
+    _elem_index,
+    trid,
+    &req,
+    0,     // transition
+    delay,
+    0     // flags
+    );
+
+  if (resp) {
+	  LOG_ERROR("gecko_cmd_mesh_generic_client_publish failed,code %x\r\n", resp);
+  } else {
+	  LOG_INFO("request sent, trid = %u, delay = %d\r\n", trid, delay);
+  }
+}
+
+
+/***************************************************************************//**
+ * Handling of short button presses (less than 0.25s).
+ * This function is called from the main loop when application receives
+ * event gecko_evt_system_external_signal_id.
+ *
+ * @param[in] button  Defines which button was pressed,
+ *                    possible values are 0 = PB0, 1 = PB1.
+ *
+ * @note This function is called from application context (not ISR)
+ *       so it is safe to call BGAPI functions
+ ******************************************************************************/
+void handle_button_press(int button)
+{
+  /* short press adjusts light brightness, using Light Lightness model */
+  if (button == 1) {
+	  people_count += 10;
+  } else {
+	  people_count -= 1;
+  }
+
+  LOG_DEBUG("people_count %d\r\n", people_count);
+
+  /* send the request (lightness request is sent only once in this example) */
+  //send_lightness_request(0);
+  publish_sensor_data();
+}
+
+
+/***************************************************************************
+ * publish_sensor_data
+ * *************************************************************************
+ * @brief	This function publishes the people count to the friend node
+ *
+ * @param	none
+ *
+ * @result	none
+ *
+ */
+void publish_sensor_data(void)
+{
+	struct mesh_generic_state sensor_data;
+	errorcode_t resp;
+
+	sensor_data.kind = mesh_generic_state_level;
+	sensor_data.level.level = people_count;
+
+	resp = mesh_lib_generic_server_update(MESH_GENERIC_LEVEL_SERVER_MODEL_ID,
+				  	  	  	  	  	  	  	  	_elem_index,
+		                                        &sensor_data,
+		                                        0,
+		                                        0);
+	if (resp) {
+		LOG_ERROR("Generic server update failed, code = %x\r\n", resp);
+	} else {
+		LOG_INFO("Generic server updated\r\n");
+
+		resp = mesh_lib_generic_server_publish(MESH_GENERIC_LEVEL_SERVER_MODEL_ID,
+														_elem_index,
+														mesh_generic_state_level);
+
+		if (resp) {
+			LOG_ERROR("Publish failed, code = %x\r\n", resp);
+		} else {
+			LOG_INFO("Published sensor data, code = %x\r\n", resp);
+		}
+	}
+
 }

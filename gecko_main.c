@@ -159,8 +159,8 @@ void gecko_bgapi_classes_init_client_lpn(void)
 	gecko_bgapi_class_mesh_proxy_init();
 	gecko_bgapi_class_mesh_proxy_server_init();
 	//gecko_bgapi_class_mesh_proxy_client_init();
-	gecko_bgapi_class_mesh_generic_client_init();
-	//gecko_bgapi_class_mesh_generic_server_init();
+	//gecko_bgapi_class_mesh_generic_client_init();
+	gecko_bgapi_class_mesh_generic_server_init();
 	//gecko_bgapi_class_mesh_vendor_model_init();
 	//gecko_bgapi_class_mesh_health_client_init();
 	//gecko_bgapi_class_mesh_health_server_init();
