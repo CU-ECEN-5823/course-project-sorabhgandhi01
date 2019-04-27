@@ -5,9 +5,12 @@
  *      Author: Dan Walkes
  */
 
+#include <stdbool.h>
+
 #include "retargetserial.h"
 #include "log.h"
-#include <stdbool.h>
+#include "native_gecko.h"
+#include "main.h"
 
 //#include "timer.h"
 
@@ -20,11 +23,11 @@
 
 uint32_t loggerGetTimestamp(void)
 {
-	/*uint32_t total_time;
+	    uint32_t total_time;
 		//total_time = ((rollover_counter * 1) + (LETIMER_CounterGet(LETIMER0) * (2 / 32678)));
 		total_time = count;
-		LOG_INFO("%d\n", total_time);
-		return total_time;*/
+		//LOG_INFO("%d\n", total_time);
+		return total_time;
 	//return timerGetRunTimeMilliseconds();
 }
 
@@ -35,6 +38,7 @@ uint32_t loggerGetTimestamp(void)
 void logInit(void)
 {
 	RETARGET_SerialInit();
+	gecko_cmd_hardware_set_soft_timer(1 * 328, LOGGER_UPDATE, 0);
 	/**
 	 * See https://siliconlabs.github.io/Gecko_SDK_Doc/efm32g/html/group__RetargetIo.html#ga9e36c68713259dd181ef349430ba0096
 	 * RETARGET_SerialCrLf() ensures each linefeed also includes carriage return.  Without it, the first character is shifted in TeraTerm

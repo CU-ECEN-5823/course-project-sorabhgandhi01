@@ -74,6 +74,6 @@ static inline void logInit() {}
 static inline void logFlush() {}
 #endif
 
-static int count;
+volatile int count;
 
 #endif /* SRC_LOG_H_ */

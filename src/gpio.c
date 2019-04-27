@@ -7,7 +7,7 @@
 #include "gpio.h"
 #include "em_gpio.h"
 #include <string.h>
-
+#include "log.h"
 
 #define	LED0_port gpioPortF
 #define LED0_pin	4
@@ -26,8 +26,8 @@ void gpioInit()
 	GPIO_PinModeSet(PB0_BUTTON_PORT, PB0_BUTTON_PIN, gpioModeInputPull, true);
 	GPIO_PinModeSet(PB1_BUTTON_PORT, PB1_BUTTON_PIN, gpioModeInputPull, true);
 
-	GPIO_PinModeSet(PIR_SENSOR_PORT, PIR_SENSOR_1, gpioModeInputPull, true);
-	GPIO_PinModeSet(PIR_SENSOR_PORT, PIR_SENSOR_2, gpioModeInputPull, true);
+	GPIO_PinModeSet(IR_SENSOR_PORT, IR_SENSOR_1_PIN, gpioModeInputPull, true);
+	GPIO_PinModeSet(IR_SENSOR_PORT, IR_SENSOR_2_PIN, gpioModeInputPull, true);
 }
 
 void gpioLed0SetOn()
@@ -89,3 +89,44 @@ void enable_button_interrupts(void)
   GPIOINT_CallbackRegister(PB1_BUTTON_PIN, gpioint);
 }
 
+void enable_sensor_interrupts(void)
+{
+	GPIOINT_Init();
+
+	/* configure interrupt for PB0 and PB1, both falling and rising edges */
+	GPIO_ExtIntConfig(IR_SENSOR_PORT, IR_SENSOR_1_PIN, IR_SENSOR_1_PIN, false, true, true);
+	GPIO_ExtIntConfig(IR_SENSOR_PORT, IR_SENSOR_2_PIN, IR_SENSOR_2_PIN, false, true, true);
+
+	/* register the callback function that is invoked when interrupt occurs */
+	GPIOINT_CallbackRegister(IR_SENSOR_1_PIN, right_sensor_int);
+	GPIOINT_CallbackRegister(IR_SENSOR_2_PIN, left_sensor_int);
+
+	right_sensor_active = 1;
+	left_sensor_active = 1;
+}
+
+void right_sensor_int(uint8_t pin)
+{
+	CORE_ATOMIC_IRQ_DISABLE();
+	if ((pin == IR_SENSOR_1_PIN) && (right_sensor_active == 1))
+	{
+		LOG_INFO("In S1\t");
+		EXT_SIGNAL_SENSOR_1 |= SENSOR_1_STATUS;
+		gecko_external_signal(EXT_SIGNAL_SENSOR_1);
+	}
+
+	CORE_ATOMIC_IRQ_ENABLE();
+}
+
+void left_sensor_int(uint8_t pin)
+{
+	CORE_ATOMIC_IRQ_DISABLE();
+	if ((pin == IR_SENSOR_2_PIN) && (left_sensor_active == 1))
+	{
+		LOG_INFO("In S2\t");
+		EXT_SIGNAL_SENSOR_2 |= SENSOR_2_STATUS;
+		gecko_external_signal(EXT_SIGNAL_SENSOR_2);
+	}
+
+	CORE_ATOMIC_IRQ_ENABLE();
+}
