@@ -1,11 +1,13 @@
 
 /***************************************************************************//**
  * @Author	Sorabh Gandhi
- * @Date	04/03/2019
+ * @Date	04/27/2019
  * @file main.c
- * @brief Bluetooth Mesh Publisher and Subscriber
- * This Thermometer allows to measure temperature using the temperature sensor SI7021,
- * from a mobile app.
+ * @brief Bluetooth Mesh Low Power Node
+ * This is a LPN implementation that publishes the "people count" and Controls
+ * the sprayer based on the subscribed message from the Friend Node. This implementation
+ * uses two modes - Level model to publish people count and ON/OFF model to
+ * Subscribe the Sprayer frequency
  *******************************************************************************
  * # License
  * <b>Copyright 2018 Silicon Laboratories Inc. www.silabs.com</b>
@@ -24,12 +26,12 @@
  *				https://www.silabs.com/documents/login/quick-start-guides/qsg139-getting-started-with-bluetooth.pdf - GATT Documentation
  *				https://www.bluetooth.com/specifications/gatt/viewer?attributeXmlFile=org.bluetooth.service.health_thermometer.xml
  *				https://www.bluetooth.com/specifications/gatt/viewer?attributeXmlFile=org.bluetooth.characteristic.temperature_measurement.xml
- *				https://www.silabs.com/documents/login/reference-manuals/bluetooth-api-reference.pdf - API Refernce Manual
+ *				https://www.silabs.com/documents/login/reference-manuals/bluetooth-api-reference.pdf - API Reference Manual
  *
  *				https://www.silabs.com/community/wireless/bluetooth/knowledge-base.entry.html/2017/05/02/how_to_save_floatva-Udm8 - Reference for PS Data
  *
- *				soc-btmesh-light -- SDK Example Prokect
- *				soc-btmesh-switch -- SDK Example Prokect
+ *				soc-btmesh-light -- SDK Example Project
+ *				soc-btmesh-switch -- SDK Example Project
  *
  *	@Configuration Method - PERIOD, LED_ON_TIME and ENERGY_MODE are defined in main.h
  ******************************************************************************/
@@ -69,51 +71,15 @@
 #include "ble_mesh_device_type.h"
 #include "main.h"
 
+
 /*********************************************************************************
  * 						Structures and Definitions
  ********************************************************************************/
-/// Flag for indicating DFU Reset must be performed
-//uint8_t boot_to_dfu = 0;
-
-/// Maximum number of simultaneous Bluetooth connections
-#define MAX_CONNECTIONS 2
-
-/// Heap for Bluetooth stack
-uint8_t bluetooth_stack_heap[DEFAULT_BLUETOOTH_HEAP(MAX_CONNECTIONS) + BTMESH_HEAP_SIZE + 1760];
-
-bool mesh_bgapi_listener(struct gecko_cmd_packet *evt);
-
-/// Bluetooth advertisement set configuration
-///
-/// At minimum the following is required:
-/// * One advertisement set for Bluetooth LE stack (handle number 0)
-/// * One advertisement set for Mesh data (handle number 1)
-/// * One advertisement set for Mesh unprovisioned beacons (handle number 2)
-/// * One advertisement set for Mesh unprovisioned URI (handle number 3)
-/// * N advertisement sets for Mesh GATT service advertisements
-/// (one for each network key, handle numbers 4 .. N+3)
-///
-#define MAX_ADVERTISERS (4 + MESH_CFG_MAX_NETKEYS)
-
-/// Priorities for bluetooth link layer operations
-static gecko_bluetooth_ll_priorities linklayer_priorities = GECKO_BLUETOOTH_PRIORITIES_DEFAULT;
-
-
-/// Minimum color temperature 800K
-#define TEMPERATURE_MIN      0x0320
-/// Maximum color temperature 20000K
-#define TEMPERATURE_MAX      0x4e20
-/// Delta UV is hardcoded to 0 in this example
-#define DELTA_UV  0
-
-
-
-
 #define PS_SAVE_IN_COUNT(in_count)	ps_save_object(0x5001, &in_count, sizeof(in_count))
 #define PS_SAVE_OUT_COUNT(out_count)	ps_save_object(0x5002, &out_count, sizeof(out_count))
 #define PS_SAVE_PEOPLE_COUNT(people_count)	ps_save_object(0x5000, &people_count, sizeof(people_count))
 
-#define PWM_FREQ 100
+
 
 /*********************************************************************************
  * 							Helper Functions
@@ -123,7 +89,6 @@ bool mesh_bgapi_listener(struct gecko_cmd_packet *evt);
 extern void handle_gecko_event(uint32_t evt_id, struct gecko_cmd_packet *evt);
 void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt);
 void set_device_name(bd_addr *pAddr);
-void handle_button_state(uint8_t button);
 void lpn_node_init(void);
 void lpn_init(void);
 void calculate_peope_count(void);
@@ -131,29 +96,13 @@ void publish_sensor_data(void);
 uint16_t ps_save_object(uint16_t key, void *pValue, uint8_t size);
 uint16_t ps_load_object(uint16_t key, void *pValue, uint8_t size);
 
+
 /*********************************************************************************
  * 							GLOBAL VARIABLES
  ********************************************************************************/
 
-/// Flag for indicating DFU Reset must be performed
-//uint8_t boot_to_dfu = 0;
-
-/// current position of the switch
-static uint8 switch_pos = 0;
-
-/// number of on/off requests to be sent
-static uint8 request_count;
-
-/// transaction identifier
-static uint8 trid = 0;
-
 /// For indexing elements of the node (this example has only one element)
 static uint16 _elem_index = 0xffff;
-
-/// For indexing elements of the node
-static uint16 _primary_elem_index = 0xffff;
-
-static uint8_t connection_handle;
 
 /// Flag for indicating that lpn feature is active
 static uint8 lpn_active = 0;
@@ -164,20 +113,15 @@ static uint8 num_connections = 0;
 /// handle of the last opened LE connection
 static uint8 conn_handle = 0xFF;
 
-/// lightness level converted from percentage to actual value, range 0..65535
-static uint16 lightness_level = 0;
-
-/// temperature level converted from percentage to actual value, range 0..65535
-static uint16 temperature_level = 0;
-
 //people count calculated through the logic
 static uint16 people_count = 0;
 
+//Holds the current Entry Count
 static uint16 in_count = 0;
 
+//Holds the current Exit Count
 static uint16 out_count = 0;
 
-static uint32_t topValue;
 
 extern uint8_t EXT_SIGNAL_PB0_BUTTON;
 
@@ -231,24 +175,28 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 	switch (evt_id) {
 		case gecko_evt_system_boot_id:
 
+			/* Check for PB0 or PB1 pressed */
 			 if ((GPIO_PinInGet(PB0_BUTTON_PORT, PB0_BUTTON_PIN) == 0) || \
 					 (GPIO_PinInGet(PB1_BUTTON_PORT, PB1_BUTTON_PIN) == 0)) {
 
-				 gecko_cmd_flash_ps_erase_all();
-				 gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_FACTORY_RESET, 1);
+				 gecko_cmd_flash_ps_erase_all();		//Factory Reset
+				 gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_FACTORY_RESET, 1);	//Set a 1 second timer to reset
 				 displayPrintf(DISPLAY_ROW_ACTION, "Factory Reset");
 			 } else {
 				 struct gecko_msg_system_get_bt_address_rsp_t *pAddr = gecko_cmd_system_get_bt_address();
-				 gecko_cmd_hardware_set_soft_timer(1 * 32768, DISPLAY_UPDATE, 0);
-				 gecko_cmd_hardware_set_soft_timer(30 * 32768, TIMER_ID_SPRAY_START, 0);
-				 set_device_name(&pAddr->address);
-				 gecko_cmd_mesh_node_init()->result;
+				 gecko_cmd_hardware_set_soft_timer(1 * 32768, DISPLAY_UPDATE, 0);		//Update the display every 1 second
+				 gecko_cmd_hardware_set_soft_timer(30 * 32768, TIMER_ID_SPRAY_START, 0);	// Configure the Srayer to trigger at every 30 Seconds
+				 set_device_name(&pAddr->address);		//Display the BT address on the Screen
+				 gecko_cmd_mesh_node_init()->result;	//Initialize the Mesh stack
 
+				 /* Load the previously stored People Count, In Count and Out Count */
 				 if((ps_load_object(0x5000, &people_count, sizeof(people_count)) == 0) &&
 						 (ps_load_object(0x5001, &in_count, sizeof(in_count)) == 0) &&
 						 (ps_load_object(0x5002, &out_count, sizeof(out_count)) == 0))
 				 {
 					 LOG_INFO("PS DATA Loaded Properly\r\n");
+					 displayPrintf(DISPLAY_ROW_TEMPVALUE, "Count = %d", people_count);
+
 				 } else {
 					 LOG_INFO("Error in Loading PS DATA\r\n");
 				 }
@@ -262,11 +210,11 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 					gecko_cmd_system_reset(0);
 					break;
 
-				 case DISPLAY_UPDATE:
+				 case DISPLAY_UPDATE:		//Update the Display
 					displayUpdate();
 					break;
 
-				 case LOGGER_UPDATE:
+				 case LOGGER_UPDATE:		//Increment the timestamp for the Logger
 					count += 10;
 					break;
 
@@ -274,7 +222,7 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 					gecko_cmd_system_reset(0);
 					break;
 
-				 case TIMER_ID_INT_RESET:
+				 case TIMER_ID_INT_RESET:		//Enable the sensor Interrupts
 					enable_sensor_interrupts();
 				 	break;
 
@@ -285,7 +233,7 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 					 }
 					 break;
 
-				 case TIMER_ID_FRIEND_FIND:
+				 case TIMER_ID_FRIEND_FIND:		//Scan for a friend node in the network to establish friendship
 				 	 {
 				 		LOG_INFO("trying to find friend...\r\n");
 				 		result = gecko_cmd_mesh_lpn_establish_friendship(0)->result;
@@ -296,11 +244,11 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 				 	 }
 			        break;
 
-				 case TIMER_ID_SPRAY_START:
+				 case TIMER_ID_SPRAY_START:		//Trigger the Sprayer ON (Emulated by an On-Board LED)
 					 gpioLed0SetOn();
 					 break;
 
-				 case TIMER_ID_SPRAY_RESET:
+				 case TIMER_ID_SPRAY_RESET:		//Turn Off the Sprayer (Emulated by an On-Board LED)
 					 gpioLed0SetOff();
 					 break;
 
@@ -313,7 +261,6 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 
 		case gecko_evt_mesh_node_initialized_id:
 			LOG_INFO("In gecko_evt_mesh_node_initialized_id event\n");
-			//displayPrintf(DISPLAY_ROW_ACTION, "Node");
 			uint16_t result;
 
 			// Initialize generic client models
@@ -342,7 +289,6 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 		case gecko_evt_mesh_node_provisioned_id:
 			_elem_index = 0;
 			lpn_node_init();
-
 			displayPrintf(DISPLAY_ROW_ACTION, "Provisioned");
 			break;
 
@@ -358,7 +304,6 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 			num_connections++;
 			conn_handle = evt->data.evt_le_connection_opened.connection;
 			displayPrintf(DISPLAY_ROW_CONNECTION, "Connected");
-			//lpn_deinit();
 			break;
 
 		case gecko_evt_le_connection_closed_id:
@@ -423,10 +368,9 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 
 			req_type = evt->data.evt_mesh_generic_server_client_request.type;
 			data = evt->data.evt_mesh_generic_server_client_request.parameters.data[0];
-					//(evt->data.evt_mesh_generic_server_client_request.parameters.data[0];
 
 			LOG_INFO("Subscribed value = %d; data = %d\r\n", req_type, data);
-
+			/*Tigger the Sprayer for "ON" Request*/
 			if (data == 1) {
 				gpioLed0SetOn();
 			}
@@ -441,60 +385,42 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 			break;
 
 		case gecko_evt_system_external_signal_id:
-
-//			if ((evt->data.evt_system_external_signal.extsignals) & PB0_BUTTON_STATUS) {
-//				EXT_SIGNAL_PB0_BUTTON &= ~(PB0_BUTTON_STATUS);
-//
-//				if(GPIO_PinInGet(gpioPortF, PB0_BUTTON_PIN) == 0) {
-//					//handle_button_state(0);
-//				}
-//				if(GPIO_PinInGet(gpioPortF, PB0_BUTTON_PIN) == 1) {
-//					//handle_button_state(1);
-//					handle_button_press(0);
-//				}
-//			}
-//
-//			if ((evt->data.evt_system_external_signal.extsignals) & PB1_BUTTON_STATUS) {
-//				EXT_SIGNAL_PB1_BUTTON &= ~(PB1_BUTTON_STATUS);
-//
-//				if(GPIO_PinInGet(gpioPortF, PB1_BUTTON_PIN) == 0) {
-//					//handle_button_press(0);
-//				}
-//				if(GPIO_PinInGet(gpioPortF, PB1_BUTTON_PIN) == 1) {
-//					handle_button_press(1);
-//				}
-//			}
-
+			/*Right Sensor Event Triggered*/
 			if ((evt->data.evt_system_external_signal.extsignals) & SENSOR_1_STATUS) {
 				CORE_DECLARE_IRQ_STATE;
 				CORE_ENTER_CRITICAL();
 				LOG_INFO("S1 = %d\t S2 = %d\r\n", GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_1_PIN), GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_2_PIN));
+
+				/*Check if both the sensors are triggered*/
 				if ((GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_1_PIN) == 0) &&
 						(GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_2_PIN) == 0)) {
-					disable_sensor_interrupts();
+					disable_sensor_interrupts();		//Disable both the sensor Interrupts
 					LOG_INFO("Out count = %d\r\n", (++out_count));
-					PS_SAVE_OUT_COUNT(out_count);
-					calculate_peope_count();
-					gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_INT_RESET, 1);
+					PS_SAVE_OUT_COUNT(out_count);		//Save the Updated Exit Count
+					calculate_peope_count();			//Calculate and Publish the Count to Friend Node
+					gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_INT_RESET, 1);	//Enable the Interrupt after 2 seconds
 				}
-				EXT_SIGNAL_SENSOR_1 &= ~(SENSOR_1_STATUS);
+				EXT_SIGNAL_SENSOR_1 &= ~(SENSOR_1_STATUS);		//Reset the INT signal flag
 				CORE_EXIT_CRITICAL();
 			}
 
+			/*Left Sensor Event Triggered*/
 			if ((evt->data.evt_system_external_signal.extsignals) & SENSOR_2_STATUS) {
 				CORE_DECLARE_IRQ_STATE;
 				CORE_ENTER_CRITICAL();
 				LOG_INFO("S2 = %d\t S1 = %d\r\n", GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_2_PIN), GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_1_PIN));
+
+				/*Check if both the sensors are triggered*/
 				if((GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_1_PIN) == 0) &&
 						(GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_2_PIN) == 0)) {
 
-					disable_sensor_interrupts();
+					disable_sensor_interrupts();				//Disable both the sensor Interrupts
 					LOG_INFO("In count = %d\r\n", (++in_count));
-					PS_SAVE_IN_COUNT(in_count);
-					calculate_peope_count();
-					gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_INT_RESET, 1);
+					PS_SAVE_IN_COUNT(in_count);		//Save the Updated Entry Count
+					calculate_peope_count();		//Calculate and Publish the Count to Friend Node
+					gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_INT_RESET, 1);	//Enable the Interrupt after 2 seconds
 				}
-				EXT_SIGNAL_SENSOR_2 &= ~(SENSOR_2_STATUS);
+				EXT_SIGNAL_SENSOR_2 &= ~(SENSOR_2_STATUS);		//Reset the INT signal flag
 				CORE_EXIT_CRITICAL();
 			}
 
@@ -502,11 +428,22 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 	}
 }
 
+
+/***************************************************************************
+ * set_device_name
+ * *************************************************************************
+ * @brief	This function sets the device name and shows the Bluetooth address
+ * 			on the Display Screen
+ *
+ * @param	none
+ *
+ * @result	none
+ *
+ */
 void set_device_name(bd_addr *pAddr)
 {
   char name[20];
   uint16 res;
-
 
   sprintf(name, "5823LPN %02x:%02x", pAddr->addr[1], pAddr->addr[0]);
 
@@ -522,15 +459,37 @@ void set_device_name(bd_addr *pAddr)
   gecko_cmd_gatt_server_write_attribute_value(gattdb_device_name, 0, strlen(name), (uint8 *)name)->result;
 }
 
+
+/***************************************************************************
+ * lpn_node_init
+ * *************************************************************************
+ * @brief	This function initializes all the models provisioned and initializes
+ * 			the low power node functionality
+ *
+ * @param	none
+ *
+ * @result	none
+ *
+ */
 void lpn_node_init()
 {
 	mesh_lib_init(malloc, free, 8);
 	lpn_init();
 }
 
-/***************************************************************************//**
- * Initialize LPN functionality with configuration and friendship establishment.
- ******************************************************************************/
+
+
+/***************************************************************************
+ * lpn_init
+ * *************************************************************************
+ * @brief	This function initializes LPN functionality with configuration
+ * 			and friendship establishment
+ *
+ * @param	none
+ *
+ * @result	none
+ *
+ */
 void lpn_init(void)
 {
 	uint16 result;
@@ -630,6 +589,7 @@ void calculate_peope_count(void)
   PS_SAVE_PEOPLE_COUNT(people_count);
   PS_SAVE_IN_COUNT(in_count);
   PS_SAVE_OUT_COUNT(out_count);
+  displayPrintf(DISPLAY_ROW_TEMPVALUE, "Count = %d", people_count);
   CORE_EXIT_CRITICAL();
 
   LOG_INFO("people_count %d\r\n", people_count);
