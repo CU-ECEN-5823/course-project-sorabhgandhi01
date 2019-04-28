@@ -1,12 +1,12 @@
 # Connected HealthCare Project
 
-Individual Project Report - https://docs.google.com/document/d/1pNsrtf5zZttMMvlcdPNwHQ5MlwcjV6aYvS2iFy9GKa8/edit?pli=1#
+Individual Project Report - https://drive.google.com/drive/folders/11KOX9CI1JxbhoPBVUDstg6z58nnEK1Wv
 
-Command Table - https://drive.google.com/open?id=1yhEZEmZGMaND_os9iTQkYLbUQ42X91i3
+Command Table - https://drive.google.com/drive/folders/11KOX9CI1JxbhoPBVUDstg6z58nnEK1Wv
 
-Group Project Report - https://drive.google.com/open?id=1okOsKa-Gd5dY1A1gxo1qx05YxYFyZS1NvZkpySGHqXw
+Group Project Report - https://drive.google.com/drive/folders/19hdArP41vl--8bYrzDXRaQdipgCvqJyU
 
-Project Validation Plan - https://drive.google.com/open?id=1fT7aAccYDtFnekfaoFxfsdTUZt_fWKRsD7TQs9PxbyQ
+Project Validation Plan - https://drive.google.com/drive/folders/19hdArP41vl--8bYrzDXRaQdipgCvqJyU
 
 ## Project Update 1
 
@@ -18,8 +18,6 @@ Project Validation Plan - https://drive.google.com/open?id=1fT7aAccYDtFnekfaoFxf
 1.) Intergrated the LPN and FN using level model. Tested the working using dynamically incremented values. Also tested both publish and subscribe (LPN to FN and FN to LPN)
 2.) Tested the sensor module individually
 
-## Tasks to do next week
+## Project Summary
 
-1.) Integrate sensor module with working LPN software
-2.) Load power management
-2.) End to End Integration and Validation
+All the planned events for this node have been finished and its properly working. The LPN works with two models and an embedded provisioner is used to provision the node. The node has also been tested as per the verification plan.
