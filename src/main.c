@@ -185,7 +185,6 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 			 } else {
 				 struct gecko_msg_system_get_bt_address_rsp_t *pAddr = gecko_cmd_system_get_bt_address();
 				 gecko_cmd_hardware_set_soft_timer(1 * 32768, DISPLAY_UPDATE, 0);		//Update the display every 1 second
-				 gecko_cmd_hardware_set_soft_timer(30 * 32768, TIMER_ID_SPRAY_START, 0);	// Configure the Srayer to trigger at every 30 Seconds
 				 set_device_name(&pAddr->address);		//Display the BT address on the Screen
 				 gecko_cmd_mesh_node_init()->result;	//Initialize the Mesh stack
 
@@ -274,8 +273,9 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 			if ((pData->provisioned)) {
 				LOG_INFO("node is provisioned. address:%x, ivi:%ld\r\n", pData->address, pData->ivi);
 				_elem_index = 0;
-				enable_sensor_interrupts();
-				lpn_node_init();
+				enable_sensor_interrupts();		//Enable Sensor Interrupts
+				lpn_node_init();				//Enable LPN Functionality
+				gecko_cmd_hardware_set_soft_timer(30 * 32768, TIMER_ID_SPRAY_START, 0);	// Configure the Srayer to trigger at every 30 Seconds
 			}
 			else {
 				gecko_cmd_mesh_node_start_unprov_beaconing(0x3);
@@ -296,37 +296,6 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 			LOG_INFO("provisioning failed, code %x\r\n", evt->data.evt_mesh_node_provisioning_failed.result);
 			displayPrintf(DISPLAY_ROW_ACTION, "Provisioned Failed");
 			gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_RESTART, 1);
-			break;
-
-
-		case gecko_evt_le_connection_opened_id:
-			LOG_INFO("evt:gecko_evt_le_connection_opened_id\r\n");
-			num_connections++;
-			conn_handle = evt->data.evt_le_connection_opened.connection;
-			displayPrintf(DISPLAY_ROW_CONNECTION, "Connected");
-			break;
-
-		case gecko_evt_le_connection_closed_id:
-
-			LOG_INFO("evt:conn closed, reason 0x%x\r\n", evt->data.evt_le_connection_closed.reason);
-			conn_handle = 0xFF;
-			if (num_connections > 0) {
-				if (--num_connections == 0) {
-					displayPrintf(DISPLAY_ROW_CONNECTION, "");
-					// initialize lpn when there is no active connection
-					lpn_init();
-				}
-			}
-
-			break;
-
-		case gecko_evt_mesh_node_reset_id:
-			if (conn_handle != 0xFF) {
-			    gecko_cmd_le_connection_close(conn_handle);
-			}
-			gecko_cmd_flash_ps_erase_all();
-			gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_FACTORY_RESET, 1);
-
 			break;
 
 		case gecko_evt_mesh_lpn_friendship_established_id:
@@ -377,25 +346,24 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 			break;
 
 		case gecko_evt_mesh_generic_server_state_changed_id:
+			LOG_INFO("gecko_evt_mesh_generic_server_state_changed_id\r\n");
 			mesh_lib_generic_server_event_handler(evt);
 			break;
 
-		case gecko_evt_gatt_server_user_write_request_id:
-
-			break;
 
 		case gecko_evt_system_external_signal_id:
 			/*Right Sensor Event Triggered*/
 			if ((evt->data.evt_system_external_signal.extsignals) & SENSOR_1_STATUS) {
 				CORE_DECLARE_IRQ_STATE;
 				CORE_ENTER_CRITICAL();
-				LOG_INFO("S1 = %d\t S2 = %d\r\n", GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_1_PIN), GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_2_PIN));
+				//LOG_INFO("S1 = %d\t S2 = %d\r\n", GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_1_PIN), GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_2_PIN));
 
 				/*Check if both the sensors are triggered*/
 				if ((GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_1_PIN) == 0) &&
 						(GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_2_PIN) == 0)) {
 					disable_sensor_interrupts();		//Disable both the sensor Interrupts
-					LOG_INFO("Out count = %d\r\n", (++out_count));
+					out_count++;
+					LOG_INFO("Out count = %d\r\n", (out_count));
 					PS_SAVE_OUT_COUNT(out_count);		//Save the Updated Exit Count
 					calculate_peope_count();			//Calculate and Publish the Count to Friend Node
 					gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_INT_RESET, 1);	//Enable the Interrupt after 2 seconds
@@ -408,14 +376,15 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 			if ((evt->data.evt_system_external_signal.extsignals) & SENSOR_2_STATUS) {
 				CORE_DECLARE_IRQ_STATE;
 				CORE_ENTER_CRITICAL();
-				LOG_INFO("S2 = %d\t S1 = %d\r\n", GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_2_PIN), GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_1_PIN));
+				//LOG_INFO("S2 = %d\t S1 = %d\r\n", GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_2_PIN), GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_1_PIN));
 
 				/*Check if both the sensors are triggered*/
 				if((GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_1_PIN) == 0) &&
 						(GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_2_PIN) == 0)) {
 
 					disable_sensor_interrupts();				//Disable both the sensor Interrupts
-					LOG_INFO("In count = %d\r\n", (++in_count));
+					in_count++;
+					LOG_INFO("In count = %d\r\n", (in_count));
 					PS_SAVE_IN_COUNT(in_count);		//Save the Updated Entry Count
 					calculate_peope_count();		//Calculate and Publish the Count to Friend Node
 					gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_INT_RESET, 1);	//Enable the Interrupt after 2 seconds

@@ -135,7 +135,6 @@ void right_sensor_int(uint8_t pin)
 	CORE_ATOMIC_IRQ_DISABLE();
 	if ((pin == IR_SENSOR_1_PIN) && (right_sensor_active == 1))
 	{
-		LOG_INFO("In S1\t");
 		EXT_SIGNAL_SENSOR_1 |= SENSOR_1_STATUS;
 		gecko_external_signal(EXT_SIGNAL_SENSOR_1);
 	}
@@ -148,7 +147,6 @@ void left_sensor_int(uint8_t pin)
 	CORE_ATOMIC_IRQ_DISABLE();
 	if ((pin == IR_SENSOR_2_PIN) && (left_sensor_active == 1))
 	{
-		LOG_INFO("In S2\t");
 		EXT_SIGNAL_SENSOR_2 |= SENSOR_2_STATUS;
 		gecko_external_signal(EXT_SIGNAL_SENSOR_2);
 	}
