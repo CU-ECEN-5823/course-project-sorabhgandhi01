@@ -56,8 +56,9 @@
 
 #include "em_emu.h"
 #include "em_cmu.h"
-#include <em_gpio.h>
+#include "em_gpio.h"
 #include "em_core.h"
+#include "em_timer.h"
 
 /*********************************************************************************
  * 						Own Headers
@@ -67,7 +68,6 @@
 #include "display.h"
 #include "ble_mesh_device_type.h"
 #include "main.h"
-//#include "timer.h"
 
 /*********************************************************************************
  * 						Structures and Definitions
@@ -106,35 +106,14 @@ static gecko_bluetooth_ll_priorities linklayer_priorities = GECKO_BLUETOOTH_PRIO
 /// Delta UV is hardcoded to 0 in this example
 #define DELTA_UV  0
 
-//#define SCHEDULER_SUPPORTS_DISPLAY_UPDATE_EVENT 1
-//#define TIMER_SUPPORTS_1HZ_TIMER_EVENT	1
 
-/// Bluetooth stack configuration
-const gecko_configuration_t config1 =
-{
-  .sleep.flags = SLEEP_FLAGS_DEEP_SLEEP_ENABLE,
-  .bluetooth.max_connections = MAX_CONNECTIONS,
-  .bluetooth.max_advertisers = MAX_ADVERTISERS,
-  .bluetooth.heap = bluetooth_stack_heap,
-  .bluetooth.heap_size = sizeof(bluetooth_stack_heap) - BTMESH_HEAP_SIZE,
-  .bluetooth.sleep_clock_accuracy = 100,
-  .bluetooth.linklayer_priorities = &linklayer_priorities,
-  .gattdb = &bg_gattdb_data,
-  .btmesh_heap_size = BTMESH_HEAP_SIZE,
-#if (HAL_PA_ENABLE)
-  .pa.config_enable = 1, // Set this to be a valid PA config
-#if defined(FEATURE_PA_INPUT_FROM_VBAT)
-  .pa.input = GECKO_RADIO_PA_INPUT_VBAT, // Configure PA input to VBAT
-#else
-  .pa.input = GECKO_RADIO_PA_INPUT_DCDC,
-#endif // defined(FEATURE_PA_INPUT_FROM_VBAT)
-#endif // (HAL_PA_ENABLE)
-  .max_timers = 16,
-};
+
 
 #define PS_SAVE_IN_COUNT(in_count)	ps_save_object(0x5001, &in_count, sizeof(in_count))
 #define PS_SAVE_OUT_COUNT(out_count)	ps_save_object(0x5002, &out_count, sizeof(out_count))
 #define PS_SAVE_PEOPLE_COUNT(people_count)	ps_save_object(0x5000, &people_count, sizeof(people_count))
+
+#define PWM_FREQ 100
 
 /*********************************************************************************
  * 							Helper Functions
@@ -198,6 +177,8 @@ static uint16 in_count = 0;
 
 static uint16 out_count = 0;
 
+static uint32_t topValue;
+
 extern uint8_t EXT_SIGNAL_PB0_BUTTON;
 
 extern uint8_t EXT_SIGNAL_SENSOR_1;
@@ -259,6 +240,7 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 			 } else {
 				 struct gecko_msg_system_get_bt_address_rsp_t *pAddr = gecko_cmd_system_get_bt_address();
 				 gecko_cmd_hardware_set_soft_timer(1 * 32768, DISPLAY_UPDATE, 0);
+				 gecko_cmd_hardware_set_soft_timer(30 * 32768, TIMER_ID_SPRAY_START, 0);
 				 set_device_name(&pAddr->address);
 				 gecko_cmd_mesh_node_init()->result;
 
@@ -293,8 +275,7 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 					break;
 
 				 case TIMER_ID_INT_RESET:
-				 	right_sensor_active = 1;
-				 	left_sensor_active = 1;
+					enable_sensor_interrupts();
 				 	break;
 
 				 case TIMER_ID_NODE_CONFIGURED:
@@ -314,6 +295,14 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 				 		}
 				 	 }
 			        break;
+
+				 case TIMER_ID_SPRAY_START:
+					 gpioLed0SetOn();
+					 break;
+
+				 case TIMER_ID_SPRAY_RESET:
+					 gpioLed0SetOff();
+					 break;
 
 				 default:
 					 break;
@@ -338,7 +327,6 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 			if ((pData->provisioned)) {
 				LOG_INFO("node is provisioned. address:%x, ivi:%ld\r\n", pData->address, pData->ivi);
 				_elem_index = 0;
-				//enable_button_interrupts();
 				enable_sensor_interrupts();
 				lpn_node_init();
 			}
@@ -439,6 +427,10 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 
 			LOG_INFO("Subscribed value = %d; data = %d\r\n", req_type, data);
 
+			if (data == 1) {
+				gpioLed0SetOn();
+			}
+			break;
 
 		case gecko_evt_mesh_generic_server_state_changed_id:
 			mesh_lib_generic_server_event_handler(evt);
@@ -479,8 +471,7 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 				LOG_INFO("S1 = %d\t S2 = %d\r\n", GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_1_PIN), GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_2_PIN));
 				if ((GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_1_PIN) == 0) &&
 						(GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_2_PIN) == 0)) {
-					right_sensor_active = 0;
-					left_sensor_active = 0;
+					disable_sensor_interrupts();
 					LOG_INFO("Out count = %d\r\n", (++out_count));
 					PS_SAVE_OUT_COUNT(out_count);
 					calculate_peope_count();
@@ -497,8 +488,7 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 				if((GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_1_PIN) == 0) &&
 						(GPIO_PinInGet(IR_SENSOR_PORT, IR_SENSOR_2_PIN) == 0)) {
 
-					left_sensor_active = 0;
-					right_sensor_active = 0;
+					disable_sensor_interrupts();
 					LOG_INFO("In count = %d\r\n", (++in_count));
 					PS_SAVE_IN_COUNT(in_count);
 					calculate_peope_count();
@@ -634,8 +624,12 @@ void calculate_peope_count(void)
 	  people_count = (in_count - out_count);
   } else {
 	  people_count = 0;
+	  in_count = 0;
+	  out_count = 0;
   }
   PS_SAVE_PEOPLE_COUNT(people_count);
+  PS_SAVE_IN_COUNT(in_count);
+  PS_SAVE_OUT_COUNT(out_count);
   CORE_EXIT_CRITICAL();
 
   LOG_INFO("people_count %d\r\n", people_count);

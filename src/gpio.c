@@ -8,6 +8,8 @@
 #include "em_gpio.h"
 #include <string.h>
 #include "log.h"
+#include "native_gecko.h"
+#include "main.h"
 
 #define	LED0_port gpioPortF
 #define LED0_pin	4
@@ -25,14 +27,12 @@ void gpioInit()
 
 	GPIO_PinModeSet(PB0_BUTTON_PORT, PB0_BUTTON_PIN, gpioModeInputPull, true);
 	GPIO_PinModeSet(PB1_BUTTON_PORT, PB1_BUTTON_PIN, gpioModeInputPull, true);
-
-	GPIO_PinModeSet(IR_SENSOR_PORT, IR_SENSOR_1_PIN, gpioModeInputPull, true);
-	GPIO_PinModeSet(IR_SENSOR_PORT, IR_SENSOR_2_PIN, gpioModeInputPull, true);
 }
 
 void gpioLed0SetOn()
 {
 	GPIO_PinOutSet(LED0_port,LED0_pin);
+	gecko_cmd_hardware_set_soft_timer(1 * 32768, TIMER_ID_SPRAY_RESET, 1);
 }
 void gpioLed0SetOff()
 {
@@ -75,6 +75,14 @@ void gpioint(uint8_t pin)
 	}
 }
 
+void GPIOINT_Deint(void)
+{
+	NVIC_ClearPendingIRQ(GPIO_ODD_IRQn);
+	NVIC_DisableIRQ(GPIO_ODD_IRQn);
+	NVIC_ClearPendingIRQ(GPIO_EVEN_IRQn);
+	NVIC_DisableIRQ(GPIO_EVEN_IRQn);
+}
+
 
 void enable_button_interrupts(void)
 {
@@ -91,6 +99,9 @@ void enable_button_interrupts(void)
 
 void enable_sensor_interrupts(void)
 {
+	GPIO_PinModeSet(IR_SENSOR_PORT, IR_SENSOR_1_PIN, gpioModeInputPull, true);
+	GPIO_PinModeSet(IR_SENSOR_PORT, IR_SENSOR_2_PIN, gpioModeInputPull, true);
+
 	GPIOINT_Init();
 
 	/* configure interrupt for PB0 and PB1, both falling and rising edges */
@@ -103,6 +114,20 @@ void enable_sensor_interrupts(void)
 
 	right_sensor_active = 1;
 	left_sensor_active = 1;
+}
+
+void disable_sensor_interrupts(void)
+{
+	GPIO_PinModeSet(IR_SENSOR_PORT, IR_SENSOR_1_PIN, gpioModeDisabled, true);
+	GPIO_PinModeSet(IR_SENSOR_PORT, IR_SENSOR_2_PIN, gpioModeDisabled, true);
+
+	GPIOINT_Deint();
+
+	GPIO_ExtIntConfig(IR_SENSOR_PORT, IR_SENSOR_1_PIN, IR_SENSOR_1_PIN, false, true, false);
+	GPIO_ExtIntConfig(IR_SENSOR_PORT, IR_SENSOR_2_PIN, IR_SENSOR_2_PIN, false, true, false);
+
+	right_sensor_active = 0;
+	left_sensor_active = 0;
 }
 
 void right_sensor_int(uint8_t pin)
