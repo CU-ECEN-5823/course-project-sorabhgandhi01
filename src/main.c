@@ -55,6 +55,7 @@
 #include "mesh_lighting_model_capi_types.h"
 #include "mesh_lib.h"
 #include <mesh_sizes.h>
+#include "gecko_ble_errors.h"
 
 #include "em_emu.h"
 #include "em_cmu.h"
@@ -110,9 +111,6 @@ static uint8 lpn_active = 0;
 /// number of active Bluetooth connections
 static uint8 num_connections = 0;
 
-/// handle of the last opened LE connection
-static uint8 conn_handle = 0xFF;
-
 //people count calculated through the logic
 static uint16 people_count = 0;
 
@@ -122,16 +120,11 @@ static uint16 in_count = 0;
 //Holds the current Exit Count
 static uint16 out_count = 0;
 
-
-extern uint8_t EXT_SIGNAL_PB0_BUTTON;
-
+//IR Sensor 1 Event Flag
 extern uint8_t EXT_SIGNAL_SENSOR_1;
 
+//IR Sensor 2 Event Flag
 extern uint8_t EXT_SIGNAL_SENSOR_2;
-
-extern uint8_t right_sensor_active;
-
-extern uint8_t left_sensor_active;
 
 
 /**********************************************************************************
@@ -179,26 +172,14 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 			 if ((GPIO_PinInGet(PB0_BUTTON_PORT, PB0_BUTTON_PIN) == 0) || \
 					 (GPIO_PinInGet(PB1_BUTTON_PORT, PB1_BUTTON_PIN) == 0)) {
 
-				 gecko_cmd_flash_ps_erase_all();		//Factory Reset
-				 gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_FACTORY_RESET, 1);	//Set a 1 second timer to reset
+				 BTSTACK_CHECK_RESPONSE(gecko_cmd_flash_ps_erase_all());		//Factory Reset
+				 BTSTACK_CHECK_RESPONSE(gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_FACTORY_RESET, 1));	//Set a 1 second timer to reset
 				 displayPrintf(DISPLAY_ROW_ACTION, "Factory Reset");
 			 } else {
 				 struct gecko_msg_system_get_bt_address_rsp_t *pAddr = gecko_cmd_system_get_bt_address();
-				 gecko_cmd_hardware_set_soft_timer(1 * 32768, DISPLAY_UPDATE, 0);		//Update the display every 1 second
+				 BTSTACK_CHECK_RESPONSE(gecko_cmd_hardware_set_soft_timer(1 * 32768, DISPLAY_UPDATE, 0));		//Update the display every 1 second
 				 set_device_name(&pAddr->address);		//Display the BT address on the Screen
-				 gecko_cmd_mesh_node_init()->result;	//Initialize the Mesh stack
-
-				 /* Load the previously stored People Count, In Count and Out Count */
-				 if((ps_load_object(0x5000, &people_count, sizeof(people_count)) == 0) &&
-						 (ps_load_object(0x5001, &in_count, sizeof(in_count)) == 0) &&
-						 (ps_load_object(0x5002, &out_count, sizeof(out_count)) == 0))
-				 {
-					 LOG_INFO("PS DATA Loaded Properly\r\n");
-					 displayPrintf(DISPLAY_ROW_TEMPVALUE, "Count = %d", people_count);
-
-				 } else {
-					 LOG_INFO("Error in Loading PS DATA\r\n");
-				 }
+				 BTSTACK_CHECK_RESPONSE(gecko_cmd_mesh_node_init());	//Initialize the Mesh stack
 			 }
 			break;
 
@@ -224,13 +205,6 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 				 case TIMER_ID_INT_RESET:		//Enable the sensor Interrupts
 					enable_sensor_interrupts();
 				 	break;
-
-				 case TIMER_ID_NODE_CONFIGURED:
-					 if (!lpn_active) {
-						 LOG_INFO("try to initialize lpn...\r\n");
-						 lpn_init();
-					 }
-					 break;
 
 				 case TIMER_ID_FRIEND_FIND:		//Scan for a friend node in the network to establish friendship
 				 	 {
@@ -275,7 +249,18 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 				_elem_index = 0;
 				enable_sensor_interrupts();		//Enable Sensor Interrupts
 				lpn_node_init();				//Enable LPN Functionality
-				gecko_cmd_hardware_set_soft_timer(30 * 32768, TIMER_ID_SPRAY_START, 0);	// Configure the Srayer to trigger at every 30 Seconds
+				BTSTACK_CHECK_RESPONSE(gecko_cmd_hardware_set_soft_timer(30 * 32768, TIMER_ID_SPRAY_START, 0));	// Configure the Srayer to trigger at every 30 Seconds
+
+				/* Load the previously stored People Count, In Count and Out Count */
+				if((ps_load_object(0x5000, &people_count, sizeof(people_count)) == 0) &&
+										 (ps_load_object(0x5001, &in_count, sizeof(in_count)) == 0) &&
+										 (ps_load_object(0x5002, &out_count, sizeof(out_count)) == 0))
+				{
+					LOG_INFO("PS DATA Loaded Properly\r\n");
+					displayPrintf(DISPLAY_ROW_TEMPVALUE, "Count = %d", people_count);
+				} else {
+					LOG_INFO("Error in Loading PS DATA\r\n");
+				}
 			}
 			else {
 				gecko_cmd_mesh_node_start_unprov_beaconing(0x3);
@@ -295,7 +280,7 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 		case gecko_evt_mesh_node_provisioning_failed_id:
 			LOG_INFO("provisioning failed, code %x\r\n", evt->data.evt_mesh_node_provisioning_failed.result);
 			displayPrintf(DISPLAY_ROW_ACTION, "Provisioned Failed");
-			gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_RESTART, 1);
+			BTSTACK_CHECK_RESPONSE(gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_RESTART, 1));
 			break;
 
 		case gecko_evt_mesh_lpn_friendship_established_id:
@@ -366,7 +351,7 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 					LOG_INFO("Out count = %d\r\n", (out_count));
 					PS_SAVE_OUT_COUNT(out_count);		//Save the Updated Exit Count
 					calculate_peope_count();			//Calculate and Publish the Count to Friend Node
-					gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_INT_RESET, 1);	//Enable the Interrupt after 2 seconds
+					BTSTACK_CHECK_RESPONSE(gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_INT_RESET, 1));	//Enable the Interrupt after 2 seconds
 				}
 				EXT_SIGNAL_SENSOR_1 &= ~(SENSOR_1_STATUS);		//Reset the INT signal flag
 				CORE_EXIT_CRITICAL();
@@ -387,7 +372,7 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 					LOG_INFO("In count = %d\r\n", (in_count));
 					PS_SAVE_IN_COUNT(in_count);		//Save the Updated Entry Count
 					calculate_peope_count();		//Calculate and Publish the Count to Friend Node
-					gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_INT_RESET, 1);	//Enable the Interrupt after 2 seconds
+					BTSTACK_CHECK_RESPONSE(gecko_cmd_hardware_set_soft_timer(2 * 32768, TIMER_ID_INT_RESET, 1));	//Enable the Interrupt after 2 seconds
 				}
 				EXT_SIGNAL_SENSOR_2 &= ~(SENSOR_2_STATUS);		//Reset the INT signal flag
 				CORE_EXIT_CRITICAL();
@@ -412,7 +397,6 @@ void handle_gecko_my_event(uint32_t evt_id, struct gecko_cmd_packet *evt)
 void set_device_name(bd_addr *pAddr)
 {
   char name[20];
-  uint16 res;
 
   sprintf(name, "5823LPN %02x:%02x", pAddr->addr[1], pAddr->addr[0]);
 
@@ -425,7 +409,7 @@ void set_device_name(bd_addr *pAddr)
 		  pAddr->addr[5]);
 
   // write device name to the GATT database
-  gecko_cmd_gatt_server_write_attribute_value(gattdb_device_name, 0, strlen(name), (uint8 *)name)->result;
+  BTSTACK_CHECK_RESPONSE(gecko_cmd_gatt_server_write_attribute_value(gattdb_device_name, 0, strlen(name), (uint8 *)name));
 }
 
 
@@ -498,9 +482,16 @@ void lpn_init(void)
 }
 
 
-/***************************************************************************//**
- * Deinitialize LPN functionality.
- ******************************************************************************/
+/***************************************************************************
+ * lpn_deinit
+ * *************************************************************************
+ * @brief	This function Deinitialize LPN functionality.
+ *
+ * @param	none
+ *
+ * @result	none
+ *
+ */
 void lpn_deinit(void)
 {
 	uint16 result;
@@ -531,19 +522,18 @@ void lpn_deinit(void)
 }
 
 
-
-
-/***************************************************************************//**
- * Handling of short button presses (less than 0.25s).
- * This function is called from the main loop when application receives
- * event gecko_evt_system_external_signal_id.
+/***************************************************************************
+ * calculate_peope_count
+ * *************************************************************************
+ * @brief	This function is called from the main loop when application receives
+ * 			event gecko_evt_system_external_signal_id. This function calculates
+ * 			the people count and calls the sensor publish function.
  *
- * @param[in] button  Defines which button was pressed,
- *                    possible values are 0 = PB0, 1 = PB1.
+ * @param	none
  *
- * @note This function is called from application context (not ISR)
- *       so it is safe to call BGAPI functions
- ******************************************************************************/
+ * @result	none
+ *
+ */
 void calculate_peope_count(void)
 {
   CORE_DECLARE_IRQ_STATE;
@@ -611,6 +601,19 @@ void publish_sensor_data(void)
 }
 
 
+
+/***************************************************************************
+ * ps_save_object
+ * *************************************************************************
+ * @brief	This function is used to save the updated value as a persistant data
+ *
+ * @param	key		Uinque 16-bit key used to save and load a variable
+ * 			pvalue	Data to be stored
+ * 			size	Size of the input data
+ *
+ * @result			0 for success, else the operation fails
+ *
+ */
 uint16_t ps_save_object(uint16_t key, void *pValue, uint8_t size)
 {
 	struct gecko_msg_flash_ps_save_rsp_t *pResp;
@@ -620,6 +623,21 @@ uint16_t ps_save_object(uint16_t key, void *pValue, uint8_t size)
 	return(pResp->result);
 }
 
+
+
+/***************************************************************************
+ * ps_load_object
+ * *************************************************************************
+ * @brief	This function is used to load the value stored in the memory based
+ * 			on the unique key value
+ *
+ * @param	key		Uinque 16-bit key used to save and load a variable
+ * 			pvalue	Data to be stored
+ * 			size	Size of the input data
+ *
+ * @result			0 for success, else the operation fails
+ *
+ */
 uint16_t ps_load_object(uint16_t key, void *pValue, uint8_t size)
 {
 	struct gecko_msg_flash_ps_load_rsp_t *pResp;

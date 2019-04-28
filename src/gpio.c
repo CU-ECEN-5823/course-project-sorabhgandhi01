@@ -1,8 +1,8 @@
 /*
  * gpio.c
  *
- *  Created on: Dec 12, 2018
- *      Author: Dan Walkes
+ *  Created on: April 5, 2019
+ *      Author: Sorabh Gandhi
  */
 #include "gpio.h"
 #include "em_gpio.h"
@@ -11,40 +11,60 @@
 #include "native_gecko.h"
 #include "main.h"
 
-#define	LED0_port gpioPortF
-#define LED0_pin	4
-#define LED1_port gpioPortF
-#define LED1_pin 5
 
+
+/***************************************************************************
+ * gpioInit
+ * *************************************************************************
+ * @brief	This function initializes on-Board LED0 and Push Button 0 and 1
+ *
+ * @param	none
+ *
+ * @result	none
+ *
+ */
 void gpioInit()
 {
 	GPIO_DriveStrengthSet(LED0_port, gpioDriveStrengthWeakAlternateStrong);
-	//GPIO_DriveStrengthSet(LED0_port, gpioDriveStrengthWeakAlternateWeak);
 	GPIO_PinModeSet(LED0_port, LED0_pin, gpioModePushPull, false);
-	GPIO_DriveStrengthSet(LED1_port, gpioDriveStrengthWeakAlternateStrong);
-	//GPIO_DriveStrengthSet(LED1_port, gpioDriveStrengthWeakAlternateWeak);
-	GPIO_PinModeSet(LED1_port, LED1_pin, gpioModePushPull, false);
 
 	GPIO_PinModeSet(PB0_BUTTON_PORT, PB0_BUTTON_PIN, gpioModeInputPull, true);
 	GPIO_PinModeSet(PB1_BUTTON_PORT, PB1_BUTTON_PIN, gpioModeInputPull, true);
 }
 
+
+
+/***************************************************************************
+ * gpioLed0SetOn
+ * *************************************************************************
+ * @brief	This function turns the on-board LED0 ON and sets a hardware
+ * 			soft-timer to turn-off the LED
+ *
+ * @param	none
+ *
+ * @result	none
+ *
+ */
 void gpioLed0SetOn()
 {
 	GPIO_PinOutSet(LED0_port,LED0_pin);
 	gecko_cmd_hardware_set_soft_timer(1 * 32768, TIMER_ID_SPRAY_RESET, 1);
 }
+
+
+/***************************************************************************
+ * gpioLed0SetOff
+ * *************************************************************************
+ * @brief	This function turns OFF the on-board LED0
+ *
+ * @param	none
+ *
+ * @result	none
+ *
+ */
 void gpioLed0SetOff()
 {
 	GPIO_PinOutClear(LED0_port,LED0_pin);
-}
-void gpioLed1SetOn()
-{
-	GPIO_PinOutSet(LED1_port,LED1_pin);
-}
-void gpioLed1SetOff()
-{
-	GPIO_PinOutClear(LED1_port,LED1_pin);
 }
 
 void gpioEnableDisplay()
@@ -61,20 +81,19 @@ void gpioSetDisplayExtcomin(bool high)
 	}
 }
 
-void gpioint(uint8_t pin)
-{
-	if (pin == PB0_BUTTON_PIN)
-	{
-		EXT_SIGNAL_PB0_BUTTON |= PB0_BUTTON_STATUS;
-		gecko_external_signal(EXT_SIGNAL_PB0_BUTTON);
-	}
-	else if (pin == PB1_BUTTON_PIN)
-	{
-		EXT_SIGNAL_PB1_BUTTON |= PB1_BUTTON_STATUS;
-		gecko_external_signal(EXT_SIGNAL_PB1_BUTTON);
-	}
-}
 
+
+/***************************************************************************
+ * GPIOINT_Deint
+ * *************************************************************************
+ * @brief	This function clears all the pending GPIO Interrupts and Disables
+ * 			all the GPIO Interrupts
+ *
+ * @param	none
+ *
+ * @result	none
+ *
+ */
 void GPIOINT_Deint(void)
 {
 	NVIC_ClearPendingIRQ(GPIO_ODD_IRQn);
@@ -84,19 +103,17 @@ void GPIOINT_Deint(void)
 }
 
 
-void enable_button_interrupts(void)
-{
-  GPIOINT_Init();
-
-  /* configure interrupt for PB0 and PB1, both falling and rising edges */
-  GPIO_ExtIntConfig(PB0_BUTTON_PORT, PB0_BUTTON_PIN, PB0_BUTTON_PIN, true, true, true);
-  GPIO_ExtIntConfig(PB1_BUTTON_PORT, PB1_BUTTON_PIN, PB1_BUTTON_PIN, true, true, true);
-
-  /* register the callback function that is invoked when interrupt occurs */
-  GPIOINT_CallbackRegister(PB0_BUTTON_PIN, gpioint);
-  GPIOINT_CallbackRegister(PB1_BUTTON_PIN, gpioint);
-}
-
+/***************************************************************************
+ * enable_sensor_interrupts
+ * *************************************************************************
+ * @brief	This function initializes GPIO pins for both the sensor, sets the
+ * 			falling-edge interrupt mode and registers the interrupt handler
+ *
+ * @param	none
+ *
+ * @result	none
+ *
+ */
 void enable_sensor_interrupts(void)
 {
 	GPIO_PinModeSet(IR_SENSOR_PORT, IR_SENSOR_1_PIN, gpioModeInputPull, true);
@@ -104,18 +121,26 @@ void enable_sensor_interrupts(void)
 
 	GPIOINT_Init();
 
-	/* configure interrupt for PB0 and PB1, both falling and rising edges */
+	/* configure interrupt for IR_SENSOR_1 and IR_SENSOR_2, for falling edges */
 	GPIO_ExtIntConfig(IR_SENSOR_PORT, IR_SENSOR_1_PIN, IR_SENSOR_1_PIN, false, true, true);
 	GPIO_ExtIntConfig(IR_SENSOR_PORT, IR_SENSOR_2_PIN, IR_SENSOR_2_PIN, false, true, true);
 
 	/* register the callback function that is invoked when interrupt occurs */
 	GPIOINT_CallbackRegister(IR_SENSOR_1_PIN, right_sensor_int);
 	GPIOINT_CallbackRegister(IR_SENSOR_2_PIN, left_sensor_int);
-
-	right_sensor_active = 1;
-	left_sensor_active = 1;
 }
 
+
+/***************************************************************************
+ * disable_sensor_interrupts
+ * *************************************************************************
+ * @brief	This function disables the sensor 1 and sensor 2 pin
+ *
+ * @param	none
+ *
+ * @result	none
+ *
+ */
 void disable_sensor_interrupts(void)
 {
 	GPIO_PinModeSet(IR_SENSOR_PORT, IR_SENSOR_1_PIN, gpioModeDisabled, true);
@@ -125,15 +150,25 @@ void disable_sensor_interrupts(void)
 
 	GPIO_ExtIntConfig(IR_SENSOR_PORT, IR_SENSOR_1_PIN, IR_SENSOR_1_PIN, false, true, false);
 	GPIO_ExtIntConfig(IR_SENSOR_PORT, IR_SENSOR_2_PIN, IR_SENSOR_2_PIN, false, true, false);
-
-	right_sensor_active = 0;
-	left_sensor_active = 0;
 }
 
+
+
+/***************************************************************************
+ * right_sensor_int
+ * *************************************************************************
+ * @brief	This function is a call-back for IR_SENSOR_1 and it sets the status
+ * 			flag and notifies to the gecko_external_event
+ *
+ * @param	none
+ *
+ * @result	none
+ *
+ */
 void right_sensor_int(uint8_t pin)
 {
 	CORE_ATOMIC_IRQ_DISABLE();
-	if ((pin == IR_SENSOR_1_PIN) && (right_sensor_active == 1))
+	if ((pin == IR_SENSOR_1_PIN))
 	{
 		EXT_SIGNAL_SENSOR_1 |= SENSOR_1_STATUS;
 		gecko_external_signal(EXT_SIGNAL_SENSOR_1);
@@ -142,10 +177,23 @@ void right_sensor_int(uint8_t pin)
 	CORE_ATOMIC_IRQ_ENABLE();
 }
 
+
+
+/***************************************************************************
+ * left_sensor_int
+ * *************************************************************************
+ * @brief	This function is a call-back for IR_SENSOR_2 and it sets the status
+ * 			flag and notifies to the gecko_external_event
+ *
+ * @param	none
+ *
+ * @result	none
+ *
+ */
 void left_sensor_int(uint8_t pin)
 {
 	CORE_ATOMIC_IRQ_DISABLE();
-	if ((pin == IR_SENSOR_2_PIN) && (left_sensor_active == 1))
+	if ((pin == IR_SENSOR_2_PIN))
 	{
 		EXT_SIGNAL_SENSOR_2 |= SENSOR_2_STATUS;
 		gecko_external_signal(EXT_SIGNAL_SENSOR_2);
